@@ -125,7 +125,7 @@ svg.chart{width:100%;height:auto;display:block}
 <body>
 <header class="top">
   <img src="icon.svg" alt="FOZ Defter">
-  <div class="t"><div class="brand">FOZ Analytics</div><h1>FOZ Defter</h1><div class="sub">Ön Muhasebe · Test sürümü v0.1</div></div>
+  <div class="t"><div class="brand">FOZ Analytics</div><h1>FOZ Defter</h1><div class="sub">Ön Muhasebe · Test sürümü v0.2</div></div>
   <button class="iconbtn" data-act="openBell" title="Vadeler ve bildirimler">🔔<span class="badge" id="bellBadge" hidden>0</span></button>
   <button class="iconbtn" data-act="toggleTheme" title="Tema">🌓</button>
 </header>
@@ -152,13 +152,23 @@ svg.chart{width:100%;height:auto;display:block}
    Tüm veriler cihazda (IndexedDB). Sunucu yok.
    ========================================================= */
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const AYLAR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'];
 const STATUS_LABEL = { bekliyor: 'Bekliyor', kismi: 'Kısmi Ödendi', odendi: 'Ödendi', gecikti: 'Gecikti' };
 const PARTY_TYPES = { musteri: 'Müşteri', tedarikci: 'Tedarikçi', kisi: 'Kişi' };
 const ACC_TYPES = { nakit: 'Nakit / Kasa', banka: 'Banka', kart: 'Kredi Kartı' };
 const TX_TYPES = { gelir: 'Gelir', gider: 'Gider', transfer: 'Transfer', cekis: 'İşletmeden Çekilen' };
 const TEVKIFAT = [['0','Yok'],['0.2','2/10'],['0.3','3/10'],['0.4','4/10'],['0.5','5/10'],['0.7','7/10'],['0.9','9/10'],['1','Tamamı']];
+const DOC_TYPES = [['', '— Seçilmedi —'], ['efatura', 'e-Fatura'], ['earsiv', 'e-Arşiv fatura'], ['esmm', 'e-SMM'], ['fis', 'Fiş / ÖKC'], ['dekont', 'Banka dekontu'], ['diger', 'Diğer']];
+const docLabel = (k) => (DOC_TYPES.find((x) => x[0] === k) || ['', ''])[1];
+const TAX_KINDS = {
+  kdv: { l: 'KDV', gider: false }, muhtasar: { l: 'Muhtasar ve prim hizmet', gider: false }, gecici: { l: 'Geçici vergi', gider: false },
+  gelir: { l: 'Yıllık gelir vergisi', gider: false }, sgk: { l: 'SGK / Bağ-Kur primi', gider: true }, damga: { l: 'Damga vergisi', gider: true },
+  mtv: { l: 'MTV', gider: true }, diger: { l: 'Diğer vergi / harç', gider: true },
+};
+const DEFAULT_KDV = { 'g-personel': 0, 'g-sgk': 0, 'g-vergi': 0, 'g-elektrik': 20, 'g-dogalgaz': 20, 'g-su': 10, 'g-internet': 20, 'g-telefon': 20, 'g-ofis': 20, 'g-yazilim': 20, 'g-ulasim': 20, 'g-temsil': 10, 'g-muhasebe': 20, 'g-gida': 10, 'i-hizmet': 20, 'i-danismanlik': 20, 'i-satis': 20 };
+const FREQ = { monthly: 'Her ay', weekly: 'Her hafta', yearly: 'Her yıl' };
+const CAL_URL = 'vergi-takvimi.json';
 
 /* ---------- yardımcılar ---------- */
 const $ = (s, r = document) => r.querySelector(s);
@@ -173,12 +183,18 @@ const money = (v) => nf.format(r2(v)) + ' TL';
 const numStr = (v) => (v === '' || v == null) ? '' : nf.format(r2(v));
 function parseNum(s) {
   if (typeof s === 'number') return s;
-  s = String(s || '').trim().replace(/\s|TL|₺/gi, '');
+  s = String(s || '').trim(); let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/\s|TL|TRY|₺/gi, '');
+  if (s.endsWith('-')) { neg = true; s = s.slice(0, -1); }
+  if (s.startsWith('-')) { neg = true; s = s.slice(1); } else if (s.startsWith('+')) s = s.slice(1);
   if (!s) return 0;
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+  const c = s.lastIndexOf(','), d = s.lastIndexOf('.');
+  if (c > -1 && d > -1) s = c > d ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  else if (c > -1) s = (s.match(/,/g).length > 1) ? s.replace(/,/g, '') : s.replace(',', '.');
   else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
   const v = parseFloat(s);
-  return isNaN(v) ? 0 : v;
+  return isNaN(v) ? 0 : (neg ? -v : v);
 }
 const iso = (d) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 const today = () => iso(new Date());
@@ -223,12 +239,12 @@ const DB = {
 
 /* ---------- veri modeli ---------- */
 function defaultState() {
-  return {
-    v: 1,
+  const st = {
+    v: 2,
     settings: {
       firma: '', vkn: '', vergiDairesi: '',
       kdvDefault: 20, stopajRate: 20, stopajDefault: true,
-      defaultAccount: 'a-banka', theme: 'dark',
+      defaultAccount: 'a-banka', theme: 'dark', backupDays: 7,
       notif: { enabled: true, odeme: true, tahsilat: true, vergi: true, kart: true, days: [7, 3, 1, 0], hour: '09:00' },
       tax: { enabled: true, kdv: true, muhtasar: 'uc_aylik', gecici: true, yillik: true },
     },
@@ -252,9 +268,11 @@ function defaultState() {
         { id: 'i-kira', name: 'Kira Geliri' }, { id: 'i-diger', name: 'Diğer Gelir' },
       ],
     },
-    parties: [], tx: [], debts: [], esmm: [], notifLog: {},
+    parties: [], tx: [], debts: [], esmm: [], notifLog: {}, recurring: [], taxRemote: null, seenAnn: {}, lastBackup: null, backupSnooze: null,
   };
+  applyKdvDefaults(st); return st;
 }
+function applyKdvDefaults(st) { for (const k of ['gider', 'gelir']) for (const c of st.categories[k] || []) if (c.kdv == null && DEFAULT_KDV[c.id] != null) c.kdv = DEFAULT_KDV[c.id]; }
 let S = defaultState();
 const UI = { tab: 'home', txMonth: ymOf(today()), txFilter: 'all', txSearch: '', cariTab: 'kisiler', debtFilter: 'acik', cariSearch: '', repMode: 'ay', repMonth: ymOf(today()), repYear: today().slice(0, 4) };
 
@@ -267,9 +285,10 @@ function mergeDefaults(st) {
   st.settings = Object.assign(d.settings, st.settings || {});
   st.settings.notif = Object.assign(defaultState().settings.notif, st.settings.notif || {});
   st.settings.tax = Object.assign(defaultState().settings.tax, st.settings.tax || {});
-  for (const k of ['accounts', 'parties', 'tx', 'debts', 'esmm']) if (!Array.isArray(st[k])) st[k] = d[k];
+  for (const k of ['accounts', 'parties', 'tx', 'debts', 'esmm', 'recurring']) if (!Array.isArray(st[k])) st[k] = d[k];
   if (!st.categories) st.categories = d.categories;
-  if (!st.notifLog) st.notifLog = {};
+  for (const k of ['notifLog', 'seenAnn']) if (!st[k]) st[k] = {};
+  applyKdvDefaults(st);
   return st;
 }
 
@@ -284,6 +303,9 @@ function allCats() { return [...S.categories.gider, ...S.categories.gelir]; }
 function cat(id) { return allCats().find((c) => c.id === id); }
 function catName(id) { const c = cat(id); if (!c) return ''; if (c.parent) { const p = cat(c.parent); return (p ? p.name + ' › ' : '') + c.name; } return c.name; }
 function topCat(id) { const c = cat(id); if (!c) return null; return c.parent || c.id; }
+function catKdv(id) { const c = cat(id); if (c && c.kdv != null) return Number(c.kdv); if (c && c.parent) { const p = cat(c.parent); if (p && p.kdv != null) return Number(p.kdv); } return Number(S.settings.kdvDefault); }
+function donemLabel(tax) { if (!tax || !tax.donem) return ''; const [y, m] = tax.donem.split('-').map(Number); if (tax.kind === 'gecici') return Math.ceil(m / 3) + '. dönem ' + y; if (tax.kind === 'gelir') return y + ' yılı'; return ymLabel(tax.donem); }
+function debtTitle(d) { return d.tax ? (TAX_KINDS[d.tax.kind] || { l: 'Vergi' }).l + ' · ' + donemLabel(d.tax) : partyName(d.partyId); }
 const paidOf = (d) => r2(d.payments.reduce((a, p) => a + p.amount, 0));
 const remOf = (d) => r2(d.amount - paidOf(d));
 function statusOf(d) { const rem = remOf(d); if (rem <= 0.009) return 'odendi'; if (d.due && d.due < today()) return 'gecikti'; return d.payments.length ? 'kismi' : 'bekliyor'; }
@@ -320,31 +342,55 @@ function taxEvents(from, to) {
   const out = []; let ym = addMonths(ymOf(from), -1); const end = addMonths(ymOf(to), 1);
   while (ym <= end) {
     const [y, m] = ym.split('-').map(Number); const prevM = m === 1 ? 12 : m - 1;
-    const add = (day, title) => out.push({ kind: 'tax', id: 'tax-' + ym + '-' + title, title, due: shiftWeekend(y + '-' + pad(m) + '-' + pad(Math.min(day, lastDay(y, m)))) });
-    if (tx.kdv) add(28, `KDV beyannamesi (${AYLAR[prevM - 1]} dönemi)`);
-    if (tx.muhtasar === 'aylik') add(26, `Muhtasar ve prim hizmet (${AYLAR[prevM - 1]})`);
-    if (tx.muhtasar === 'uc_aylik' && [1, 4, 7, 10].includes(m)) add(26, `3 aylık muhtasar (${[4, 1, 2, 3][[1, 4, 7, 10].indexOf(m)]}. çeyrek)`);
-    if (tx.gecici && [2, 5, 8, 11].includes(m)) add(17, `${[4, 1, 2, 3][[2, 5, 8, 11].indexOf(m)]}. dönem geçici vergi`);
-    if (tx.yillik && m === 3) add(31, 'Yıllık gelir vergisi beyanı ve 1. taksit');
-    if (tx.yillik && m === 7) add(31, 'Yıllık gelir vergisi 2. taksit');
+    const add = (day, title, taxKind, donem) => out.push({ kind: 'tax', id: 'tax-' + ym + '-' + title, title, taxKind, donem, due: shiftWeekend(y + '-' + pad(m) + '-' + pad(Math.min(day, lastDay(y, m)))) });
+    const prev = addMonths(ym, -1);
+    if (tx.kdv) add(28, `KDV beyannamesi (${AYLAR[prevM - 1]} dönemi)`, 'kdv', prev);
+    if (tx.muhtasar === 'aylik') add(26, `Muhtasar ve prim hizmet (${AYLAR[prevM - 1]})`, 'muhtasar', prev);
+    if (tx.muhtasar === 'uc_aylik' && [1, 4, 7, 10].includes(m)) add(26, `3 aylık muhtasar (${[4, 1, 2, 3][[1, 4, 7, 10].indexOf(m)]}. çeyrek)`, 'muhtasar', prev);
+    if (tx.gecici && [2, 5, 8, 11].includes(m)) add(17, `${[4, 1, 2, 3][[2, 5, 8, 11].indexOf(m)]}. dönem geçici vergi`, 'gecici', addMonths(ym, -2));
+    if (tx.yillik && m === 3) add(31, 'Yıllık gelir vergisi beyanı ve 1. taksit', 'gelir', (y - 1) + '-12');
+    if (tx.yillik && m === 7) add(31, 'Yıllık gelir vergisi 2. taksit', 'gelir2', (y - 1) + '-12');
     ym = addMonths(ym, 1);
   }
+  const rem = remoteCal();
+  for (const e of out) { const o = (rem.tarih_degisiklikleri || []).find((o) => o.tur === e.taxKind && o.donem === e.donem && normDate(o.son_gun)); if (o) { e.due = normDate(o.son_gun); e.note = o.not || 'Son gün güncellendi'; } }
+  for (const x of rem.ek_tarihler || []) { const due = normDate(x.son_gun); if (due) out.push({ kind: 'tax', id: 'x-' + (x.id || x.baslik), title: x.baslik || 'Vergi tarihi', due, note: x.not || '', taxKind: x.tur || null, donem: x.donem || null }); }
   return out.filter((e) => e.due >= from && e.due <= to);
 }
 function agenda(ahead = 30) {
   const t = today(), lim = addDays(t, ahead), items = [];
   for (const d of S.debts) {
     if (!isOpen(d) || !d.due) continue; if (d.due > lim) continue;
-    items.push({ kind: 'debt', id: d.id, dir: d.dir, title: (d.dir === 'borc' ? 'Ödeme · ' : 'Tahsilat · ') + partyName(d.partyId), sub: d.desc, due: d.due, amount: remOf(d) });
+    items.push({ kind: 'debt', id: d.id, dir: d.dir, title: (d.tax ? 'Vergi · ' : d.dir === 'borc' ? 'Ödeme · ' : 'Tahsilat · ') + debtTitle(d), sub: d.desc, due: d.due, amount: remOf(d) });
   }
   const bal = balances();
   for (const a of S.accounts) if (a.type === 'kart') {
     const due = nextCardDue(a); const owe = -(bal[a.id] || 0);
     if (due && owe > 0.009 && due <= lim) items.push({ kind: 'card', id: a.id, title: 'Kart son ödeme · ' + a.name, due, amount: r2(owe), dir: 'borc' });
   }
-  for (const e of taxEvents(t, lim)) items.push(e);
+  for (const e of taxEvents(t, lim)) { if (e.taxKind && S.debts.some((d) => d.tax && d.tax.kind === (e.taxKind === 'gelir2' ? 'gelir' : e.taxKind) && d.tax.donem === e.donem && (e.taxKind !== 'gelir2'))) continue; items.push(e); }
+  for (const r of S.recurring) { if (!r.active) continue; const nx = nextOcc(r, r.last); if (nx > t && nx <= lim && (!r.end || nx <= r.end)) items.push({ kind: 'rec', id: r.id, title: '🔁 ' + (r.desc || catName(r.categoryId) || TX_TYPES[r.type]), due: nx, amount: r.amount, dir: r.type === 'gelir' ? 'alacak' : 'borc' }); }
   items.sort((a, b) => a.due.localeCompare(b.due));
   return items;
+}
+function remoteCal() { return (S.taxRemote && S.taxRemote.data && typeof S.taxRemote.data === 'object') ? S.taxRemote.data : {}; }
+function defaultTaxDue(kind, donem) {
+  const o = (remoteCal().tarih_degisiklikleri || []).find((x) => x.tur === kind && x.donem === donem && normDate(x.son_gun)); if (o) return normDate(o.son_gun);
+  const [y, m] = donem.split('-').map(Number); const nx = addMonths(donem, 1); const [ny, nm] = nx.split('-').map(Number);
+  const at = (ym, day) => { const [a, b] = ym.split('-').map(Number); return shiftWeekend(ym + '-' + pad(Math.min(day, lastDay(a, b)))); };
+  if (kind === 'kdv') return at(nx, 28);
+  if (kind === 'muhtasar' || kind === 'damga') return at(nx, 26);
+  if (kind === 'gecici') { const qEnd = y + '-' + pad(Math.ceil(m / 3) * 3); return at(addMonths(qEnd, 2), 17); }
+  if (kind === 'gelir') return at((y + 1) + '-03', 31);
+  if (kind === 'sgk') return at(nx, lastDay(ny, nm));
+  return addDays(today(), 30);
+}
+function nextOcc(r, from) {
+  if (r.freq === 'weekly') return addDays(from, 7);
+  const [y, m] = from.split('-').map(Number);
+  if (r.freq === 'yearly') { const sm = Number(r.start.slice(5, 7)); return (y + 1) + '-' + pad(sm) + '-' + pad(Math.min(r.day, lastDay(y + 1, sm))); }
+  const nx = addMonths(y + '-' + pad(m), 1); const [a, b] = nx.split('-').map(Number);
+  return nx + '-' + pad(Math.min(r.day, lastDay(a, b)));
 }
 
 /* ---------- KDV / dönem hesapları ---------- */
@@ -553,7 +599,7 @@ function handleQRText(text, photoId) {
   let p = S.parties.find((x) => x.vkn && x.vkn === otherVkn);
   const dup = q.ettn && S.tx.find((t) => t.ettn === q.ettn);
   const lastCat = p ? [...S.tx].filter((t) => t.partyId === p.id && t.type === type && t.categoryId).sort((a, b) => b.date.localeCompare(a.date))[0] : null;
-  const pre = { type, categoryId: lastCat ? lastCat.categoryId : '', amount: q.total, kdvRate: [0, 1, 10, 20].includes(q.rate) ? q.rate : S.settings.kdvDefault, kdvDahil: true, date: q.tarih, docNo: q.no, ettn: q.ettn, source: 'qr', photoId, partyId: p ? p.id : '__new', newPartyName: p ? '' : 'VKN ' + otherVkn, newPartyVkn: otherVkn, newPartyType: mine ? 'musteri' : 'tedarikci', desc: (q.tip ? q.tip + ' ' : '') + (q.senaryo || 'e-Belge') + (q.no ? ' ' + q.no : ''), qrInfo: q, dupWarn: !!dup };
+  const pre = { type, categoryId: lastCat ? lastCat.categoryId : '', amount: q.total, kdvRate: [0, 1, 10, 20].includes(q.rate) ? q.rate : S.settings.kdvDefault, kdvDahil: true, date: q.tarih, docNo: q.no, ettn: q.ettn, source: 'qr', photoId, partyId: p ? p.id : '__new', newPartyName: p ? '' : 'VKN ' + otherVkn, newPartyVkn: otherVkn, newPartyType: mine ? 'musteri' : 'tedarikci', desc: (q.tip ? q.tip + ' ' : '') + (q.senaryo || 'e-Belge') + (q.no ? ' ' + q.no : ''), qrInfo: q, dupWarn: !!dup, kdvFixed: true, docType: /ARSIV/i.test(q.senaryo) ? 'earsiv' : 'efatura' };
   txForm(pre);
 }
 
@@ -594,7 +640,7 @@ async function scanReceipt() {
   const qr = await detectQR(img, 1200).catch(() => null);
   closeSheet();
   if (qr && parseEBelgeQR(qr)) { toast('Belgedeki QR kod okundu'); handleQRText(qr, photoId); return; }
-  txForm({ type: 'gider', photoId, source: 'fis', receiptNote: true });
+  txForm({ type: 'gider', photoId, source: 'fis', receiptNote: true, docType: 'fis' });
 }
 
 /* ---------- işlem formu ---------- */
@@ -602,8 +648,8 @@ function txForm(pre = {}, editId = null) {
   const t = editId ? txById(editId) : null;
   if (t && t.esmmId) { esmmDetail(t.esmmId); return; }
   const linked = t ? S.debts.find((d) => d.linkedTxId === t.id) : null;
-  const v = Object.assign({ type: 'gider', amount: '', kdvRate: S.settings.kdvDefault, kdvDahil: true, date: today(), categoryId: '', accountId: S.settings.defaultAccount, toAccountId: '', partyId: '', desc: '', docNo: '', photoId: null, pay: 'paid', due: addDays(today(), 30) }, pre);
-  if (t) Object.assign(v, { type: t.type, amount: t.amount, kdvRate: t.kdvRate || 0, kdvDahil: true, date: t.date, categoryId: t.categoryId, accountId: t.accountId || S.settings.defaultAccount, toAccountId: t.toAccountId, partyId: t.partyId || '', desc: t.desc, docNo: t.docNo, photoId: t.photoId, pay: linked ? 'vadeli' : 'paid', due: linked ? linked.due : addDays(today(), 30), source: t.source, ettn: t.ettn, fromPayment: t.fromPayment });
+  const v = Object.assign({ type: 'gider', amount: '', kdvRate: S.settings.kdvDefault, kdvDahil: true, date: today(), categoryId: '', accountId: S.settings.defaultAccount, toAccountId: '', partyId: '', desc: '', docNo: '', photoId: null, pay: 'paid', due: addDays(today(), 30), docType: '', tevk: 0, stopajR: 0 }, pre);
+  if (t) Object.assign(v, { type: t.type, amount: t.amount, kdvRate: t.kdvRate || 0, kdvDahil: true, date: t.date, categoryId: t.categoryId, accountId: t.accountId || S.settings.defaultAccount, toAccountId: t.toAccountId, partyId: t.partyId || '', desc: t.desc, docNo: t.docNo, photoId: t.photoId, pay: linked ? 'vadeli' : 'paid', due: linked ? linked.due : addDays(today(), 30), source: t.source, ettn: t.ettn, fromPayment: t.fromPayment, docType: t.docType || '', tevk: t.tevkifat || 0, stopajR: t.stopajRate || 0 });
   const title = t ? 'İşlemi düzenle' : (v.source === 'qr' ? 'e-Belge kaydı' : 'Yeni işlem');
   const html = `<form id="txf">
     ${v.dupWarn ? '<div class="note w">⚠️ Bu ETTN ile kayıtlı bir belge zaten var. Mükerrer kayıt olabilir.</div>' : ''}
@@ -621,34 +667,44 @@ function txForm(pre = {}, editId = null) {
     <div data-show="transfer"><div class="two"><label class="f">Hangi hesaptan<select name="fromAcc">${accOptions(v.accountId)}</select></label><label class="f">Hangi hesaba<select name="toAcc">${accOptions(v.toAccountId || (S.accounts.find((a) => a.type === 'kart') || S.accounts[0]).id)}</select></label></div>
       <div class="note">Kredi kartı borcunu ödemek için: bankadan → karta transfer. Böylece harcamalar iki kez gider sayılmaz.</div></div>
     <label class="f">Açıklama<input name="desc" value="${esc(v.desc)}" placeholder="Örn. Ofis kirası Kasım"></label>
-    <div data-show="doc"><label class="f">Belge / fatura no<input name="docNo" value="${esc(v.docNo)}"></label></div>
+    <div data-show="doc"><div class="two"><label class="f">Belge türü<select name="docType">${DOC_TYPES.map(([k, l]) => `<option value="${k}" ${k === (v.docType || '') ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label class="f">Belge / fatura no<input name="docNo" value="${esc(v.docNo)}"></label></div></div>
+    <div data-show="adv"><details ${v.tevk || v.stopajR ? 'open' : ''} style="margin-bottom:10px"><summary class="small muted" style="cursor:pointer;margin-bottom:8px">Gelişmiş: KDV tevkifatı ve stopaj</summary>
+      <div class="two"><label class="f">KDV tevkifatı<select name="tevk">${TEVKIFAT.map(([k, l]) => `<option value="${k}" ${Number(k) === Number(v.tevk) ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label class="f">Stopaj %<input name="stopajR" inputmode="decimal" value="${v.stopajR ? esc(String(v.stopajR)) : ''}" placeholder="0"></label></div>
+      <div class="small muted" style="margin:-4px 0 6px">Müşteri KDV'nin bir kısmını kendisi ödüyorsa (tevkifat) veya vergi kesintisi yapıyorsa (stopaj) seçin. Net tahsil tutarı buna göre hesaplanır.</div></details></div>
     <div data-show="pay">${linked && linked.payments.length ? `<div class="note">Bu işlem cari kayda bağlı ve ödemesi var. Ödemeleri Cari ekranından yönetin.</div><input type="hidden" name="pay" value="vadeli">` : segHtml('pay', [['paid', 'Ödendi / Tahsil edildi'], ['vadeli', 'Vadeli (cari)']], v.pay)}</div>
     <div data-show="acc"><label class="f">Hesap<select name="accountId">${accOptions(v.accountId)}</select></label></div>
     <div data-show="due"><label class="f">Vade tarihi<input type="date" name="due" value="${v.due}"></label><div class="small muted" style="margin:-4px 0 10px">Vadeli kayıt, cari hesapta açık borç/alacak olarak izlenir ve vade yaklaşınca bildirim gelir.</div></div>
+    ${t ? '' : `<div data-show="rec"><label class="chk"><input type="checkbox" name="recOn"> 🔁 Bu işlemi tekrarla (kira, abonelik, aylık hizmet…)</label>
+      <div id="recBox" hidden><div class="two"><label class="f">Sıklık<select name="recFreq">${Object.entries(FREQ).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label><label class="f">Bitiş (isteğe bağlı)<input type="date" name="recEnd"></label></div>
+      <div class="small muted" style="margin:-4px 0 10px">Sonraki tekrarlar tarihi gelince otomatik eklenir. Ayarlar → Tekrarlayan işlemler'den düzenleyebilir veya durdurabilirsiniz.</div></div></div>`}
     <div class="btns" style="align-items:center;margin-bottom:12px"><button type="button" class="btn" id="phBtn">📷 Belge fotoğrafı</button><span id="phPrev"></span><input type="hidden" name="photoId" value="${esc(v.photoId || '')}"></div>
     <button class="btn primary block">Kaydet</button>
     ${t ? '<button type="button" class="btn danger block" style="margin-top:8px" id="delTx">İşlemi sil</button>' : ''}
   </form>`;
   openSheet(title, html, (b) => {
     const f = $('#txf', b);
-    const fillCats = () => { const ty = f.type.value; if (ty === 'gelir' || ty === 'gider') { const cur = f.categoryId.value || v.categoryId; f.categoryId.innerHTML = catOptions(ty, cur); if (!f.categoryId.value) f.categoryId.selectedIndex = 0; } };
+    let kdvTouched = !!t || !!v.kdvFixed;
+    const fillCats = () => { const ty = f.type.value; if (ty === 'gelir' || ty === 'gider') { const cur = f.categoryId.value || v.categoryId; f.categoryId.innerHTML = catOptions(ty, cur); if (!f.categoryId.value) f.categoryId.selectedIndex = 0; if (!kdvTouched) f.kdvRate.value = String(catKdv(f.categoryId.value)); } };
     const refresh = () => {
       const ty = f.type.value, pay = f.pay ? f.pay.value : 'paid';
       const show = (k, on) => $$(`[data-show="${k}"]`, f).forEach((e) => (e.hidden = !on));
       const gg = ty === 'gelir' || ty === 'gider';
-      show('kdv', gg); show('cat', gg); show('party', gg); show('doc', gg); show('pay', gg); show('transfer', ty === 'transfer');
+      show('kdv', gg); show('cat', gg); show('party', gg); show('doc', gg); show('pay', gg); show('transfer', ty === 'transfer'); show('adv', ty === 'gelir'); show('rec', gg);
       show('acc', ty === 'cekis' || (gg && pay === 'paid')); show('due', gg && pay === 'vadeli');
       fillCats(); calc();
     };
     const calc = () => {
       const a = parseNum(f.amount.value), r = Number(f.kdvRate.value) / 100, inc = f.kdvDahil.checked;
       const matrah = inc ? a / (1 + r) : a, kdv = matrah * r;
-      $('#kdvCalc', b).innerHTML = `Matrah <b>${money(matrah)}</b><br>KDV (%${f.kdvRate.value}) <b>${money(kdv)}</b><br>Toplam <b>${money(matrah + kdv)}</b>`;
+      const isG = f.type.value === 'gelir', tv = isG ? kdv * Number(f.tevk.value) : 0, st = isG ? matrah * parseNum(f.stopajR.value) / 100 : 0;
+      $('#kdvCalc', b).innerHTML = `Matrah <b>${money(matrah)}</b><br>KDV (%${f.kdvRate.value}) <b>${money(kdv)}</b><br>Toplam <b>${money(matrah + kdv)}</b>${tv || st ? `${tv ? `<br>KDV tevkifatı <b>− ${money(tv)}</b>` : ''}${st ? `<br>Stopaj <b>− ${money(st)}</b>` : ''}<br><span class="ok">Net tahsil</span> <b class="ok">${money(matrah + kdv - tv - st)}</b>` : ''}`;
     };
     bindSegs(f, refresh); bindPartySelect(f);
     if (v.partyId === '__new') { f.partyId.value = '__new'; $('#npBox', f).hidden = false; if (v.newPartyVkn) f.npVkn.value = v.newPartyVkn; }
-    ['amount', 'kdvRate', 'kdvDahil'].forEach((n) => f[n].addEventListener('input', calc));
-    f.kdvRate.addEventListener('change', calc);
+    ['amount', 'kdvRate', 'kdvDahil', 'stopajR'].forEach((n) => f[n].addEventListener('input', calc));
+    f.kdvRate.addEventListener('change', () => { kdvTouched = true; calc(); }); f.tevk.addEventListener('change', calc);
+    f.categoryId.addEventListener('change', () => { if (!kdvTouched) { f.kdvRate.value = String(catKdv(f.categoryId.value)); calc(); } });
+    if (f.recOn) f.recOn.onchange = () => ($('#recBox', b).hidden = !f.recOn.checked);
     refresh();
     const showPh = async () => { const id = f.photoId.value; const u = await photoURL(id); $('#phPrev', b).innerHTML = u ? `<img class="thumb" src="${u}" data-act="viewPhoto" data-id="${esc(id)}">` : ''; };
     showPh();
@@ -666,15 +722,16 @@ function txForm(pre = {}, editId = null) {
           const r = Number(f.kdvRate.value); const inc = f.kdvDahil.checked;
           const matrah = inc ? amtIn / (1 + r / 100) : amtIn;
           rec.kdvRate = r; rec.matrah = r2(matrah); rec.kdv = r2(matrah * r / 100); rec.amount = r2(rec.matrah + rec.kdv);
-          rec.categoryId = f.categoryId.value; rec.partyId = resolveParty(f); rec.docNo = f.docNo.value.trim();
-          delete rec.toAccountId; delete rec.cash; delete rec.tevk; delete rec.stopaj;
+          rec.categoryId = f.categoryId.value; rec.partyId = resolveParty(f); rec.docNo = f.docNo.value.trim(); rec.docType = f.docType.value || null;
+          delete rec.toAccountId; delete rec.cash; delete rec.tevk; delete rec.stopaj; delete rec.tevkifat; delete rec.stopajRate;
+          if (ty === 'gelir') { const tf = Number(f.tevk.value), sr = parseNum(f.stopajR.value); if (tf || sr) { rec.tevkifat = tf; rec.stopajRate = sr; rec.tevk = r2(rec.kdv * tf); rec.stopaj = r2(rec.matrah * sr / 100); rec.cash = r2(rec.amount - rec.tevk - rec.stopaj); } }
           const pay = f.pay.value;
           if (pay === 'vadeli') {
             if (!rec.partyId) { toast('Vadeli kayıt için cari seçin'); return; }
             rec.accountId = null;
             let d = linked;
-            if (!d) { d = { id: uid(), dir: ty === 'gelir' ? 'alacak' : 'borc', partyId: rec.partyId, amount: rec.amount, date: rec.date, due: f.due.value || addDays(rec.date, 30), desc: rec.desc || catName(rec.categoryId), payments: [], linkedTxId: rec.id, remind: null }; S.debts.push(d); }
-            else { d.dir = ty === 'gelir' ? 'alacak' : 'borc'; d.partyId = rec.partyId; d.amount = rec.amount; d.date = rec.date; if (f.due) d.due = f.due.value || d.due; d.desc = rec.desc || d.desc; }
+            if (!d) { d = { id: uid(), dir: ty === 'gelir' ? 'alacak' : 'borc', partyId: rec.partyId, amount: rec.cash ?? rec.amount, date: rec.date, due: f.due.value || addDays(rec.date, 30), desc: rec.desc || catName(rec.categoryId), payments: [], linkedTxId: rec.id, remind: null }; S.debts.push(d); }
+            else { d.dir = ty === 'gelir' ? 'alacak' : 'borc'; d.partyId = rec.partyId; d.amount = rec.cash ?? rec.amount; d.date = rec.date; if (f.due) d.due = f.due.value || d.due; d.desc = rec.desc || d.desc; }
           } else {
             rec.accountId = f.accountId.value;
             if (linked && !linked.payments.length) S.debts = S.debts.filter((d) => d !== linked);
@@ -686,7 +743,12 @@ function txForm(pre = {}, editId = null) {
           Object.assign(rec, { amount: r2(amtIn), matrah: r2(amtIn), kdv: 0, kdvRate: 0, accountId: f.accountId.value, categoryId: null, partyId: null });
         }
         if (!t) S.tx.push(rec);
-        save(); closeSheet(); toast('Kaydedildi'); render();
+        if (!t && f.recOn && f.recOn.checked && (ty === 'gelir' || ty === 'gider')) {
+          const lk = S.debts.find((d) => d.linkedTxId === rec.id);
+          const rule = { id: uid(), active: true, type: ty, amount: rec.amount, kdvRate: rec.kdvRate, categoryId: rec.categoryId, accountId: rec.accountId || S.settings.defaultAccount, partyId: rec.partyId, desc: rec.desc, docType: rec.docType, tevkifat: rec.tevkifat || 0, stopajRate: rec.stopajRate || 0, pay: lk ? 'vadeli' : 'paid', dueDays: lk ? Math.max(0, diffDays(lk.due, rec.date)) : 0, freq: f.recFreq.value, day: Number(rec.date.slice(8)), start: rec.date, end: f.recEnd.value || null, last: rec.date };
+          S.recurring.push(rule); rec.recurringId = rule.id;
+        }
+        save(); closeSheet(); toast(!t && rec.recurringId ? 'Kaydedildi · tekrar kuruldu' : 'Kaydedildi'); render();
       } catch (err) { if (err.message !== 'noname') toast('Hata: ' + err.message); }
     };
   });
@@ -734,11 +796,11 @@ function debtForm(pre = {}, editId = null) {
 function payForm(debtId) {
   const d = debt(debtId); if (!d) return;
   const rem = remOf(d); const isB = d.dir === 'borc';
-  openSheet(isB ? 'Ödeme gir' : 'Tahsilat gir', `<form id="pf">
-    <div class="calc">${esc(partyName(d.partyId))}<br>${esc(d.desc || '')}<br>Toplam <b>${money(d.amount)}</b><br>Ödenen <b>${money(paidOf(d))}</b><br>Kalan <b class="${isB ? 'neg' : 'pos'}">${money(rem)}</b><br>Vade <b>${fd(d.due)} · ${dueText(d.due)}</b></div>
+  openSheet(d.tax ? 'Vergi / SGK ödemesi' : isB ? 'Ödeme gir' : 'Tahsilat gir', `<form id="pf">
+    <div class="calc">${esc(debtTitle(d))}<br>${esc(d.desc || '')}<br>Toplam <b>${money(d.amount)}</b><br>Ödenen <b>${money(paidOf(d))}</b><br>Kalan <b class="${isB ? 'neg' : 'pos'}">${money(rem)}</b><br>Vade <b>${fd(d.due)} · ${dueText(d.due)}</b></div>
     <div class="two"><label class="f">Gerçekleşen ödeme tarihi<input type="date" name="date" value="${today()}" required></label><label class="f">Tutar (TL)<input name="amount" inputmode="decimal" value="${esc(numStr(rem))}" required></label></div>
     <label class="f">${isB ? 'Hangi hesaptan ödendi' : 'Hangi hesaba geldi'}<select name="accountId">${accOptions(S.settings.defaultAccount)}</select></label>
-    ${d.linkedTxId ? '' : `<label class="chk"><input type="checkbox" name="mk"> Bu ödemeyi ${isB ? 'gider' : 'gelir'} olarak da kaydet</label>
+    ${d.tax ? `<div class="note">${d.tax.gider ? 'Bu ödeme <b>gider</b> olarak da kaydedilecek.' : 'Bu ödeme <b>gider sayılmaz</b>; kâr ve KDV hesabını etkilemez, sadece hesap bakiyesinden düşer.'}</div>` : d.linkedTxId ? '' : `<label class="chk"><input type="checkbox" name="mk"> Bu ödemeyi ${isB ? 'gider' : 'gelir'} olarak da kaydet</label>
       <div id="mkBox" hidden><label class="f">Kategori<select name="categoryId">${catOptions(isB ? 'gider' : 'gelir')}</select></label></div>
       <div class="small muted" style="margin:-4px 0 10px">Borç/alacak bir alım veya satıştan doğduysa işaretleyin. Ödünç para gibi kayıtlarda işaretlemeyin.</div>`}
     <button class="btn primary block">${isB ? 'Ödendi olarak kaydet' : 'Tahsil edildi olarak kaydet'}</button>
@@ -750,8 +812,8 @@ function payForm(debtId) {
       const amt = parseNum(f.amount.value); if (!(amt > 0)) { toast('Geçerli bir tutar girin'); return; }
       if (amt > rem + 0.009) { toast('Tutar kalan bakiyeden büyük olamaz'); return; }
       const p = { id: uid(), date: f.date.value, amount: r2(amt), accountId: f.accountId.value };
-      if (f.mk && f.mk.checked) {
-        const tx = { id: uid(), created: Date.now(), type: isB ? 'gider' : 'gelir', date: p.date, amount: p.amount, matrah: p.amount, kdv: 0, kdvRate: 0, categoryId: f.categoryId.value, accountId: null, partyId: d.partyId, desc: d.desc || 'Cari ödeme', source: 'odeme', fromPayment: p.id };
+      if ((f.mk && f.mk.checked) || (d.tax && d.tax.gider)) {
+        const tx = { id: uid(), created: Date.now(), type: isB ? 'gider' : 'gelir', date: p.date, amount: p.amount, matrah: p.amount, kdv: 0, kdvRate: 0, categoryId: d.tax ? (d.tax.kind === 'sgk' ? 'g-sgk' : 'g-vergi') : f.categoryId.value, accountId: null, partyId: d.partyId, desc: d.desc || (d.tax ? debtTitle(d) : 'Cari ödeme'), source: 'odeme', fromPayment: p.id };
         S.tx.push(tx); p.txId = tx.id;
       }
       d.payments.push(p); delete d.snooze;
@@ -763,7 +825,7 @@ function debtDetail(id) {
   const d = debt(id); if (!d) return;
   const pays = [...d.payments].sort((a, b) => a.date.localeCompare(b.date));
   openSheet(d.dir === 'borc' ? 'Borç kaydı' : 'Alacak kaydı', `
-    <div class="calc"><b style="float:none">${esc(partyName(d.partyId))}</b> ${statusPill(d)}<br>${esc(d.desc || '')}<br>
+    <div class="calc"><b style="float:none">${esc(debtTitle(d))}</b> ${statusPill(d)}<br>${esc(d.desc || '')}<br>
     Tutar <b>${money(d.amount)}</b><br>İşlem tarihi <b>${fd(d.date)}</b><br>Vade <b>${fd(d.due)}${isOpen(d) ? ' · ' + dueText(d.due) : ''}</b><br>Ödenen <b>${money(paidOf(d))}</b><br>Kalan <b>${money(remOf(d))}</b></div>
     <div class="hdr">Gerçekleşen ödemeler</div>
     ${pays.length ? pays.map((p) => `<div class="row"><div class="ic">✓</div><div class="m"><div class="a">${money(p.amount)}</div><div class="b">${fd(p.date)} · ${esc(accName(p.accountId))}${p.txId ? ' · gelir/gider kaydı var' : ''}</div></div><div class="r"><button class="btn sm danger" data-act="delPay" data-debt="${d.id}" data-id="${p.id}">Sil</button></div></div>`).join('') : '<div class="empty">Henüz ödeme yok</div>'}
@@ -772,6 +834,87 @@ function debtDetail(id) {
 }
 
 /* ---------- cari kartı ---------- */
+/* ---------- vergi / SGK ödemeleri ---------- */
+function taxForm(pre = {}, editId = null) {
+  const d = editId ? debt(editId) : null;
+  const v = Object.assign({ kind: 'kdv', donem: addMonths(ymOf(today()), -1), amount: '', due: '', desc: '', gider: null, remind: null }, pre, d ? { kind: d.tax.kind, donem: d.tax.donem, amount: d.amount, due: d.due, desc: d.desc, gider: d.tax.gider, remind: d.remind } : {});
+  if (v.kind === 'gelir2') v.kind = 'gelir';
+  if (!v.due) v.due = defaultTaxDue(v.kind, v.donem);
+  const gider = v.gider == null ? TAX_KINDS[v.kind].gider : v.gider; const rem = v.remind || [3, 1, 0];
+  openSheet(d ? 'Vergi / SGK kaydı' : 'Vergi / SGK ödemesi', `<form id="tf">
+    <label class="f">Tür<select name="kind">${Object.entries(TAX_KINDS).map(([k, o]) => `<option value="${k}" ${k === v.kind ? 'selected' : ''}>${o.l}</option>`).join('')}</select></label>
+    <div class="two"><label class="f"><span id="donemLab">Dönem</span><input type="month" name="donem" value="${v.donem}" required></label><label class="f">Son ödeme tarihi<input type="date" name="due" value="${v.due}" required></label></div>
+    <div class="small muted" id="donemHint" style="margin:-4px 0 10px"></div>
+    <label class="f">Tahakkuk eden tutar (TL)<input name="amount" inputmode="decimal" required value="${v.amount === '' ? '' : esc(numStr(v.amount))}" placeholder="Beyannamedeki ödenecek tutar"></label>
+    <label class="f">Açıklama (isteğe bağlı)<input name="desc" value="${esc(v.desc)}" placeholder="Örn. tahakkuk fişi no"></label>
+    <label class="chk"><input type="checkbox" name="gider" ${gider ? 'checked' : ''}> Ödenince gider olarak yazılsın</label>
+    <div class="small muted" style="margin:-4px 0 10px">KDV, muhtasar, geçici ve gelir vergisi gider sayılmaz. SGK/Bağ-Kur, damga ve MTV genelde gider yazılır. Mali müşavirinizle teyit edin.</div>
+    ${d ? '' : `<label class="chk"><input type="checkbox" name="payNow"> Bugün ödendi</label><div id="payNowBox" hidden><label class="f">Hangi hesaptan<select name="accountId">${accOptions(S.settings.defaultAccount)}</select></label></div>`}
+    <div class="hdr">Ne zaman hatırlatılsın?</div>
+    <div class="btns" style="margin-bottom:12px">${[[7, '7 gün önce'], [3, '3 gün önce'], [1, '1 gün önce'], [0, 'Son gün']].map(([n, l]) => `<label class="chk" style="margin:0 10px 0 0"><input type="checkbox" name="rem" value="${n}" ${rem.includes(n) ? 'checked' : ''}>${l}</label>`).join('')}</div>
+    <div class="note">Mali müşaviriniz beyannameyi verdikten sonra tahakkuk eden tutarı girin. Son gün yaklaşınca bildirim gelir; ödeyince "Ödendi" deyin.</div>
+    <button class="btn primary block">Kaydet</button>
+    ${d ? '<button type="button" class="btn danger block" style="margin-top:8px" id="delT">Kaydı sil</button>' : ''}</form>`, (b) => {
+    const f = $('#tf', b); let dueTouched = !!d || !!pre.due, gTouched = !!d;
+    const hint = () => { const k = f.kind.value; $('#donemHint', b).textContent = k === 'gecici' ? 'Geçici vergide çeyreğin herhangi bir ayını seçin (ör. Temmuz-Eylül için Eylül).' : k === 'gelir' ? 'Yıllık gelir vergisinde ilgili yılın herhangi bir ayını seçin.' : 'Beyanın ait olduğu ay (ör. Ekim ayı KDV\'si için Ekim).'; };
+    const upd = () => { hint(); if (!dueTouched && f.donem.value) f.due.value = defaultTaxDue(f.kind.value, f.donem.value); if (!gTouched) f.gider.checked = TAX_KINDS[f.kind.value].gider; };
+    f.kind.onchange = upd; f.donem.onchange = upd; f.due.oninput = () => (dueTouched = true); f.gider.onchange = () => (gTouched = true); hint();
+    if (f.payNow) f.payNow.onchange = () => ($('#payNowBox', b).hidden = !f.payNow.checked);
+    if (d) $('#delT', b).onclick = async () => { if (await askConfirm('Vergi kaydı ve ödemeleri silinsin mi?', 'Sil')) { S.tx = S.tx.filter((x) => !d.payments.some((p) => p.txId === x.id)); S.debts = S.debts.filter((x) => x !== d); save(); toast('Silindi'); render(); } else taxForm({}, d.id); };
+    f.onsubmit = (e) => {
+      e.preventDefault();
+      const amt = parseNum(f.amount.value); if (!(amt > 0)) { toast('Geçerli bir tutar girin'); return; }
+      if (d && amt < paidOf(d) - 0.009) { toast('Tutar, ödenen toplamdan küçük olamaz'); return; }
+      let donem = f.donem.value; const k = f.kind.value;
+      if (k === 'gecici') { const [y, m] = donem.split('-').map(Number); donem = y + '-' + pad(Math.ceil(m / 3) * 3); }
+      if (k === 'gelir') donem = donem.slice(0, 4) + '-12';
+      const rec = d || { id: uid(), dir: 'borc', partyId: null, payments: [], linkedTxId: null, date: today() };
+      Object.assign(rec, { amount: r2(amt), due: f.due.value, desc: f.desc.value.trim(), remind: $$('input[name=rem]:checked', f).map((x) => Number(x.value)), tax: { kind: k, donem, gider: f.gider.checked } });
+      if (!d) S.debts.push(rec);
+      if (!d && f.payNow.checked) {
+        const p = { id: uid(), date: today(), amount: rec.amount, accountId: f.accountId.value };
+        if (rec.tax.gider) { const tx = { id: uid(), created: Date.now(), type: 'gider', date: p.date, amount: p.amount, matrah: p.amount, kdv: 0, kdvRate: 0, categoryId: k === 'sgk' ? 'g-sgk' : 'g-vergi', accountId: null, partyId: null, desc: rec.desc || debtTitle(rec), source: 'odeme', fromPayment: p.id }; S.tx.push(tx); p.txId = tx.id; }
+        rec.payments.push(p);
+      }
+      save(); closeSheet(); toast('Kaydedildi'); render();
+    };
+  });
+}
+
+/* ---------- tekrarlayan işlemler ---------- */
+function createFromRule(r, date) {
+  const k = Number(r.kdvRate) || 0; const matrah = r2(r.amount / (1 + k / 100));
+  const tx = { id: uid(), created: Date.now(), type: r.type, date, amount: r.amount, matrah, kdv: r2(r.amount - matrah), kdvRate: k, categoryId: r.categoryId, accountId: r.accountId, partyId: r.partyId || null, desc: r.desc, docType: r.docType || null, source: 'tekrar', recurringId: r.id };
+  if (r.type === 'gelir' && (r.tevkifat || r.stopajRate)) { tx.tevkifat = r.tevkifat; tx.stopajRate = r.stopajRate; tx.tevk = r2(tx.kdv * r.tevkifat); tx.stopaj = r2(matrah * r.stopajRate / 100); tx.cash = r2(tx.amount - tx.tevk - tx.stopaj); }
+  if (r.pay === 'vadeli' && r.partyId) { tx.accountId = null; S.debts.push({ id: uid(), dir: r.type === 'gelir' ? 'alacak' : 'borc', partyId: r.partyId, amount: tx.cash ?? tx.amount, date, due: addDays(date, r.dueDays || 30), desc: r.desc || catName(r.categoryId), payments: [], linkedTxId: tx.id, remind: null }); }
+  S.tx.push(tx);
+}
+function runRecurring() {
+  const t = today(); let n = 0;
+  for (const r of S.recurring) {
+    if (!r.active) continue; let guard = 0; let nx = nextOcc(r, r.last);
+    while (nx <= t && (!r.end || nx <= r.end) && guard++ < 400) { createFromRule(r, nx); r.last = nx; n++; nx = nextOcc(r, nx); }
+  }
+  if (n) { save(); toast('🔁 ' + n + ' tekrarlayan işlem eklendi'); render(); }
+}
+function recForm(id) {
+  const r = S.recurring.find((x) => x.id === id); if (!r) return;
+  const nx = nextOcc(r, r.last);
+  openSheet('Tekrarlayan işlem', `<form id="rf">
+    <div class="calc">${TX_TYPES[r.type]} · ${esc(catName(r.categoryId))}${r.partyId ? ' · ' + esc(partyName(r.partyId)) : ''}<br>Başlangıç <b>${fd(r.start)}</b><br>Son eklenen <b>${fd(r.last)}</b><br>Sonraki <b>${r.active && (!r.end || nx <= r.end) ? fd(nx) : '—'}</b></div>
+    <label class="chk"><input type="checkbox" name="active" ${r.active ? 'checked' : ''}> Aktif</label>
+    <label class="f">Tutar (KDV dahil, TL)<input name="amount" inputmode="decimal" value="${esc(numStr(r.amount))}" required></label>
+    <label class="f">Açıklama<input name="desc" value="${esc(r.desc || '')}"></label>
+    <div class="two"><label class="f">Sıklık<select name="freq">${Object.entries(FREQ).map(([k, l]) => `<option value="${k}" ${k === r.freq ? 'selected' : ''}>${l}</option>`).join('')}</select></label><label class="f">Bitiş<input type="date" name="end" value="${r.end || ''}"></label></div>
+    ${r.pay === 'vadeli' ? `<div class="note">Her tekrar vadeli (cari) kayıt olarak eklenir, vade ${r.dueDays} gün sonra.</div>` : `<label class="f">Hesap<select name="accountId">${accOptions(r.accountId)}</select></label>`}
+    <div class="small muted" style="margin-bottom:10px">Değişiklikler sonraki tekrarlara uygulanır; daha önce eklenen işlemler değişmez.</div>
+    <button class="btn primary block">Kaydet</button><button type="button" class="btn danger block" style="margin-top:8px" id="delR">Tekrarı sil</button></form>`, (b) => {
+    const f = $('#rf', b);
+    $('#delR', b).onclick = async () => { if (await askConfirm('Tekrar kuralı silinsin mi? Eklenmiş işlemler kalır.', 'Sil')) { S.recurring = S.recurring.filter((x) => x !== r); save(); render(); toast('Silindi'); } else recForm(id); };
+    f.onsubmit = (e) => { e.preventDefault(); const a = parseNum(f.amount.value); if (!(a > 0)) { toast('Geçerli bir tutar girin'); return; } Object.assign(r, { active: f.active.checked, amount: r2(a), desc: f.desc.value.trim(), freq: f.freq.value, end: f.end.value || null }); if (f.accountId) r.accountId = f.accountId.value; save(); closeSheet(); render(); toast('Kaydedildi'); runRecurring(); };
+  });
+}
+
 function partyForm(editId = null, pre = {}) {
   const p = editId ? party(editId) : null;
   const v = Object.assign({ name: '', type: 'musteri', vkn: '', vergiDairesi: '', tel: '', email: '', note: '' }, pre, p || {});
@@ -971,7 +1114,7 @@ function parseCommand(text) {
       const od = S.debts.filter((d) => d.partyId === pt.id && d.dir === dir && isOpen(d)).sort((a, b) => a.due.localeCompare(b.due))[0];
       if (od) { kind = 'payment'; debtId = od.id; }
     }
-    drafts.push({ kind, amount: am.v, cur: am.cur, date, due: due || addDays(date, 30), categoryId, partyId: pt && pt.id ? pt.id : (pt && pt.newName ? '__new' : ''), newName: pt && pt.newName ? pt.newName : '', debtId, desc: raw });
+    drafts.push({ kind, amount: am.v, cur: am.cur, date, due: due || addDays(date, 30), categoryId, kdvRate: categoryId ? catKdv(categoryId) : 0, partyId: pt && pt.id ? pt.id : (pt && pt.newName ? '__new' : ''), newName: pt && pt.newName ? pt.newName : '', debtId, desc: raw });
   }
   return drafts;
 }
@@ -1011,18 +1154,18 @@ function renderDrafts(drafts, box) {
       <label class="f">Tutar<input name="amount" inputmode="decimal" value="${esc(numStr(d.amount))}"></label></div>
     ${d.cur && !/tl|lira|₺/.test(d.cur) ? '<div class="note w">Döviz algılandı; tutarı TL karşılığı olarak düzeltin.</div>' : ''}
     <div class="two"><label class="f">Tarih<input type="date" name="date" value="${d.date}"></label><label class="f" data-k="due">Vade<input type="date" name="due" value="${d.due}"></label></div>
-    <label class="f" data-k="cat">Kategori<select name="categoryId"></select></label>
+    <div class="two" data-k="cat"><label class="f">Kategori<select name="categoryId"></select></label><label class="f">KDV (tutar dahil)<select name="kdvRate">${[0, 1, 10, 20].map((r) => `<option value="${r}" ${r === Number(d.kdvRate) ? 'selected' : ''}>%${r}</option>`).join('')}</select></label></div>
     <label class="f" data-k="party">Cari<select name="partyId">${d.newName ? `<option value="__new" selected>+ Yeni: ${esc(d.newName)}</option>` : ''}${partyOptions(d.newName ? '' : d.partyId).replace('<option value="__new">+ Yeni cari ekle…</option>', '')}</select></label>
-    <label class="f" data-k="debt">Hangi kayda<select name="debtId">${openDebts.map((x) => `<option value="${x.id}" ${x.id === d.debtId ? 'selected' : ''}>${esc(partyName(x.partyId))} · ${x.dir === 'borc' ? 'borç' : 'alacak'} · kalan ${money(remOf(x))}</option>`).join('')}</select></label>
+    <label class="f" data-k="debt">Hangi kayda<select name="debtId">${openDebts.map((x) => `<option value="${x.id}" ${x.id === d.debtId ? 'selected' : ''}>${esc(debtTitle(x))} · ${x.dir === 'borc' ? 'borç' : 'alacak'} · kalan ${money(remOf(x))}</option>`).join('')}</select></label>
     <label class="f" data-k="acc">Hesap<select name="accountId">${accOptions(S.settings.defaultAccount)}</select></label>
     <input type="hidden" name="newName" value="${esc(d.newName)}"><input type="hidden" name="desc" value="${esc(d.desc)}">
     <label class="chk"><input type="checkbox" name="use" checked> Bu kaydı ekle</label></div>`).join('') + '<button class="btn primary block" id="dSave">Hepsini kaydet</button>';
   const sync = (card, initCat) => {
     const k = $('[name=kind]', card).value; const show = (n, on) => ($(`[data-k="${n}"]`, card).hidden = !on);
     show('due', k === 'borc' || k === 'alacak'); show('cat', k === 'gelir' || k === 'gider'); show('party', k !== 'payment'); show('debt', k === 'payment'); show('acc', k === 'gelir' || k === 'gider' || k === 'payment');
-    if (k === 'gelir' || k === 'gider') { const s = $('[name=categoryId]', card); const cur = initCat || s.value; s.innerHTML = catOptions(k, cur); }
+    if (k === 'gelir' || k === 'gider') { const s = $('[name=categoryId]', card); const cur = initCat || s.value; s.innerHTML = catOptions(k, cur); if (!initCat) $('[name=kdvRate]', card).value = String(catKdv(s.value)); }
   };
-  $$('.draft', box).forEach((card, i) => { sync(card, drafts[i].categoryId); $('[name=kind]', card).onchange = () => sync(card); });
+  $$('.draft', box).forEach((card, i) => { sync(card, drafts[i].categoryId); $('[name=kind]', card).onchange = () => sync(card); $('[name=categoryId]', card).onchange = (e) => ($('[name=kdvRate]', card).value = String(catKdv(e.target.value))); });
   $('#dSave', box).onclick = () => {
     let n = 0;
     for (const card of $$('.draft', box)) {
@@ -1030,7 +1173,7 @@ function renderDrafts(drafts, box) {
       const k = g('kind').value, amt = r2(parseNum(g('amount').value)); if (!(amt > 0)) continue;
       let pid = g('partyId').value;
       if (pid === '__new') { const p = { id: uid(), name: g('newName').value || 'Yeni cari', type: k === 'gelir' || k === 'alacak' ? 'musteri' : 'tedarikci', vkn: '', vergiDairesi: '', tel: '', email: '', note: '' }; S.parties.push(p); pid = p.id; g('partyId').innerHTML = `<option value="${p.id}" selected>${esc(p.name)}</option>`; }
-      if (k === 'gelir' || k === 'gider') S.tx.push({ id: uid(), created: Date.now(), type: k, date: g('date').value, amount: amt, matrah: amt, kdv: 0, kdvRate: 0, categoryId: g('categoryId').value, accountId: g('accountId').value, partyId: pid || null, desc: g('desc').value, source: 'ses' });
+      if (k === 'gelir' || k === 'gider') { const kr = Number(g('kdvRate').value) || 0, mt = r2(amt / (1 + kr / 100)); S.tx.push({ id: uid(), created: Date.now(), type: k, date: g('date').value, amount: amt, matrah: mt, kdv: r2(amt - mt), kdvRate: kr, categoryId: g('categoryId').value, accountId: g('accountId').value, partyId: pid || null, desc: g('desc').value, source: 'ses' }); }
       else if (k === 'borc' || k === 'alacak') { if (!pid) { toast('Borç/alacak için cari seçin'); continue; } S.debts.push({ id: uid(), dir: k, partyId: pid, amount: amt, date: g('date').value, due: g('due').value, desc: g('desc').value, payments: [], linkedTxId: null, remind: null }); }
       else if (k === 'payment') { const d = debt(g('debtId').value); if (!d) continue; d.payments.push({ id: uid(), date: g('date').value, amount: Math.min(amt, remOf(d)), accountId: g('accountId').value }); }
       n++;
@@ -1058,7 +1201,7 @@ async function checkNotifs() {
   for (const d of S.debts) {
     if (!isOpen(d) || !d.due) continue;
     if ((d.dir === 'borc' && !n.odeme) || (d.dir === 'alacak' && !n.tahsilat)) continue;
-    const name = partyName(d.partyId), amt = money(remOf(d)), dd = diffDays(d.due, t);
+    const name = debtTitle(d), amt = money(remOf(d)), dd = diffDays(d.due, t);
     if (d.snooze) { if (d.snooze > t) continue; if (d.snooze === t) { await fire(d.id + '|snz' + t, (d.dir === 'borc' ? 'Ödeme hatırlatması: ' : 'Tahsilat hatırlatması: ') + name, `${amt} · vade ${fd(d.due)} (${dueText(d.due)})`, { debtId: d.id }); continue; } }
     const offs = d.remind || n.days;
     if (dd >= 0 && offs.includes(dd)) await fire(d.id + '|' + dd, (d.dir === 'borc' ? '🔔 Ödeme hatırlatması: ' : '🔔 Tahsilat hatırlatması: ') + name, `${amt} · vade ${fd(d.due)} · ${dueText(d.due)}`, { debtId: d.id });
@@ -1066,6 +1209,8 @@ async function checkNotifs() {
   }
   if (n.kart) { const bal = balances(); for (const a of S.accounts) if (a.type === 'kart') { const due = nextCardDue(a); const owe = -(bal[a.id] || 0); if (!due || owe <= 0.009) continue; const dd = diffDays(due, t); if (n.days.includes(dd)) await fire('card|' + a.id + '|' + due + '|' + dd, '💳 Kart son ödeme: ' + a.name, `${money(owe)} · son ödeme ${fd(due)} (${dueText(due)})`); } }
   if (n.vergi) for (const e of taxEvents(t, addDays(t, 3))) { const dd = diffDays(e.due, t); if ([3, 1, 0].includes(dd)) await fire(e.id + '|' + dd, '🧾 ' + e.title, `Son gün ${fd(e.due)} (${dueText(e.due)}). Mali müşavirinizle teyit edin.`); }
+  const bd = backupDue(); if (bd) await fire('backup|' + (S.lastBackup || 'never') + '|' + Math.floor((bd === Infinity ? 0 : bd) / Math.max(1, S.settings.backupDays)), '💾 Yedek alma zamanı', bd === Infinity ? 'Henüz hiç yedek almadınız. Ayarlar → Yedek al.' : `Son yedek ${bd} gün önce. Verilerinizi korumak için yedek alın.`);
+  for (const a of activeAnns()) await fire('ann|' + a.id, '📢 ' + (a.baslik || 'FOZ Defter'), a.mesaj || '');
   if (changed) save();
 }
 async function askNotifPermission() {
@@ -1086,16 +1231,18 @@ function txRow(t) {
 }
 function debtRow(d) {
   return `<div class="row click" data-act="debtDetail" data-id="${d.id}"><div class="ic">${d.dir === 'borc' ? '↑' : '↓'}</div>
-    <div class="m"><div class="a">${esc(partyName(d.partyId))}</div><div class="b">${d.dir === 'borc' ? 'Borç' : 'Alacak'} · ${esc(d.desc || '')} · vade ${fd(d.due)}${isOpen(d) ? ' · ' + dueText(d.due) : ''}</div></div>
+    <div class="m"><div class="a">${esc(debtTitle(d))}</div><div class="b">${d.dir === 'borc' ? 'Borç' : 'Alacak'} · ${esc(d.desc || '')} · vade ${fd(d.due)}${isOpen(d) ? ' · ' + dueText(d.due) : ''}</div></div>
     <div class="r"><div class="${d.dir === 'borc' ? 'neg' : 'pos'}" style="font-weight:700">${money(isOpen(d) ? remOf(d) : d.amount)}</div><div>${statusPill(d)}</div>
     ${isOpen(d) ? `<button class="btn sm primary" style="margin-top:4px" data-act="pay" data-id="${d.id}">${d.dir === 'borc' ? 'Ödendi' : 'Tahsil'}</button>` : ''}</div></div>`;
 }
 function agendaRow(it) {
   if (it.kind === 'debt') return debtRow(debt(it.id));
-  const ic = it.kind === 'card' ? '💳' : '🧾';
+  const ic = it.kind === 'card' ? '💳' : it.kind === 'rec' ? '🔁' : '🧾';
   const late = it.due < today();
-  return `<div class="row ${it.kind === 'card' ? 'click' : ''}" ${it.kind === 'card' ? `data-act="cardPay" data-id="${it.id}"` : ''}><div class="ic">${ic}</div><div class="m"><div class="a">${esc(it.title)}</div><div class="b">${fd(it.due)} · ${dueText(it.due)}${it.kind === 'tax' ? ' · teyit edin' : ''}</div></div>
-    <div class="r">${it.amount ? `<div class="neg" style="font-weight:700">${money(it.amount)}</div>` : ''}${late ? '<span class="pill gecikti">Geçti</span>' : ''}</div></div>`;
+  const act = it.kind === 'card' ? `data-act="cardPay" data-id="${it.id}"` : it.kind === 'rec' ? `data-act="recForm" data-id="${it.id}"` : it.taxKind ? `data-act="taxFromCal" data-tk="${esc(it.taxKind)}" data-donem="${esc(it.donem || '')}" data-due="${it.due}"` : '';
+  const sub = it.kind === 'rec' ? 'otomatik eklenecek' : it.kind === 'tax' ? (it.note ? '⚠️ ' + esc(it.note) : (it.taxKind ? 'tutarı girmek için dokunun' : 'teyit edin')) : '';
+  return `<div class="row ${act ? 'click' : ''}" ${act}><div class="ic">${ic}</div><div class="m"><div class="a">${esc(it.title)}</div><div class="b">${fd(it.due)} · ${dueText(it.due)}${sub ? ' · ' + sub : ''}</div></div>
+    <div class="r">${it.amount ? `<div class="${it.kind === 'rec' && it.dir === 'alacak' ? 'pos' : 'neg'}" style="font-weight:700">${money(it.amount)}</div>` : ''}${late ? '<span class="pill gecikti">Geçti</span>' : ''}</div></div>`;
 }
 function viewHome() {
   const bal = balances(); let cash = 0, card = 0;
@@ -1117,6 +1264,8 @@ function viewHome() {
       <div class="stat"><div class="l">Net durum</div><div class="v">${money(cash + alacak - borc - card)}</div></div>
     </div></div>
   ${perm === 'default' && S.settings.notif.enabled ? `<div class="card" style="border-color:var(--blue)"><b>🔔 Vade bildirimlerini açın</b><p class="small muted" style="margin:6px 0 10px">Ödeme ve tahsilat tarihleri yaklaşınca telefonunuza bildirim gelsin.</p><button class="btn primary" data-act="askNotif">Bildirimlere izin ver</button></div>` : ''}
+  ${activeAnns(true).map((a) => `<div class="card" style="border-color:var(--acc)"><b>📢 ${esc(a.baslik || 'Duyuru')}</b><p class="small" style="margin:6px 0 10px;white-space:pre-line">${esc(a.mesaj || '')}</p><button class="btn sm" data-act="dismissAnn" data-id="${esc(a.id)}">Tamam</button></div>`).join('')}
+  ${(() => { const bd = backupDue(); return bd ? `<div class="card" style="border-color:var(--yellow)"><b>💾 ${bd === Infinity ? 'Henüz yedek almadınız' : 'Son yedek ' + bd + ' gün önce'}</b><p class="small muted" style="margin:6px 0 10px">Veriler sadece bu cihazda. Telefon değişirse veya tarayıcı verisi silinirse yedek olmadan geri gelmez.</p><div class="btns"><button class="btn primary sm" data-act="backup">Yedek al</button><button class="btn sm" data-act="backupSnooze">3 gün sonra hatırlat</button></div></div>` : ''; })()}
   <div class="grid4" style="margin-bottom:12px">
     <div class="qa" data-act="scanQR"><b>⌗</b>QR okut</div><div class="qa" data-act="scanReceipt"><b>📷</b>Fiş çek</div>
     <div class="qa" data-act="voice"><b>🎙️</b>Sesli kayıt</div><div class="qa" data-act="newEsmm"><b>🧾</b>e-SMM</div>
@@ -1166,10 +1315,10 @@ function viewCari() {
     const bucket = (d) => { const x = diffDays(t, d.due); if (x <= 0) return 0; if (x <= 30) return 1; if (x <= 60) return 2; if (x <= 90) return 3; return 4; };
     const table = (dir) => {
       const per = {}; const tot = [0, 0, 0, 0, 0];
-      for (const d of S.debts) if (d.dir === dir && isOpen(d)) { const r = remOf(d), bk = bucket(d); (per[d.partyId] = per[d.partyId] || [0, 0, 0, 0, 0])[bk] += r; tot[bk] += r; }
+      for (const d of S.debts) if (d.dir === dir && isOpen(d)) { const r = remOf(d), bk = bucket(d); { const key = d.partyId || '__tax'; (per[key] = per[key] || [0, 0, 0, 0, 0])[bk] += r; } tot[bk] += r; }
       const ids = Object.keys(per); if (!ids.length) return '<div class="empty">Açık kayıt yok</div>';
       return `<div class="tscroll"><table class="t"><thead><tr><th>Cari</th>${buckets.map((b) => `<th>${b}</th>`).join('')}<th>Toplam</th></tr></thead><tbody>
-      ${ids.map((id) => `<tr><td>${esc(partyName(id))}</td>${per[id].map((v, i) => `<td class="${i >= 2 && v ? 'neg' : ''}">${v ? nf.format(v) : '-'}</td>`).join('')}<td><b>${nf.format(per[id].reduce((a, b) => a + b, 0))}</b></td></tr>`).join('')}
+      ${ids.map((id) => `<tr><td>${esc(id === '__tax' ? 'Vergi / SGK' : partyName(id))}</td>${per[id].map((v, i) => `<td class="${i >= 2 && v ? 'neg' : ''}">${v ? nf.format(v) : '-'}</td>`).join('')}<td><b>${nf.format(per[id].reduce((a, b) => a + b, 0))}</b></td></tr>`).join('')}
       <tr><td><b>Toplam</b></td>${tot.map((v) => `<td><b>${v ? nf.format(v) : '-'}</b></td>`).join('')}<td><b>${nf.format(tot.reduce((a, b) => a + b, 0))}</b></td></tr></tbody></table></div>`;
     };
     body = `<div class="card"><h2>Alacak yaşlandırma <small>vadesi geçen gün</small></h2>${table('alacak')}</div><div class="card"><h2>Borç yaşlandırma</h2>${table('borc')}</div>`;
@@ -1216,8 +1365,10 @@ function viewReport() {
   <div class="card"><h2>Gelir - gider <small>son 12 ay · KDV hariç</small></h2>${chart}</div>
   <div class="card"><h2>Gider dağılımı</h2>${catArr.length ? `<div class="bars">${catArr.map(([c, v]) => `<div class="bar"><div class="h"><span>${esc(catName(c))}</span><b>${money(v)}</b></div><div class="t"><i style="width:${(v / cmax * 100).toFixed(1)}%"></i></div></div>`).join('')}</div>` : '<div class="empty">Gider yok</div>'}</div>
   <div class="card"><h2>Müşteri bazlı gelir</h2>${custArr.length ? `<div class="bars">${custArr.map(([c, v]) => `<div class="bar"><div class="h"><span>${esc(c === '-' ? 'Carisiz' : partyName(c))}</span><b>${money(v)}</b></div><div class="t"><i class="g" style="width:${(v / umax * 100).toFixed(1)}%"></i></div></div>`).join('')}</div>` : '<div class="empty">Gelir yok</div>'}</div>
-  <div class="card"><h2>KDV özeti <small>bilgi amaçlı</small></h2><div class="tscroll"><table class="t"><thead><tr><th>Dönem</th><th>Hesaplanan</th><th>Tevkifat</th><th>İndirilecek</th><th>Devir</th><th>Ödenecek</th><th>Devreden</th></tr></thead><tbody>
-    ${kt.map((r) => `<tr><td>${AYLAR[Number(r.ym.slice(5)) - 1]}</td><td>${nf.format(r.hesaplanan)}</td><td>${nf.format(r.tevk)}</td><td>${nf.format(r.indirilecek)}</td><td>${nf.format(r.devirGelen)}</td><td class="warn"><b>${nf.format(r.odenecek)}</b></td><td>${nf.format(r.devreden)}</td></tr>`).join('')}</tbody></table></div></div>
+  <div class="card"><h2>KDV özeti <small>bilgi amaçlı</small></h2><div class="tscroll"><table class="t"><thead><tr><th>Dönem</th><th>Hesaplanan</th><th>Tevkifat</th><th>İndirilecek</th><th>Devir</th><th>Ödenecek</th><th>Devreden</th><th>Beyan edilen</th></tr></thead><tbody>
+    ${kt.map((r) => { const b = kdvBeyan(r.ym); return `<tr><td>${AYLAR[Number(r.ym.slice(5)) - 1]}</td><td>${nf.format(r.hesaplanan)}</td><td>${nf.format(r.tevk)}</td><td>${nf.format(r.indirilecek)}</td><td>${nf.format(r.devirGelen)}</td><td class="warn"><b>${nf.format(r.odenecek)}</b></td><td>${nf.format(r.devreden)}</td><td>${b == null ? '-' : `<b class="${Math.abs(b - r.odenecek) > 1 ? 'neg' : 'ok'}">${nf.format(b)}</b>`}</td></tr>`; }).join('')}</tbody></table></div>
+    <div class="small muted" style="margin-top:6px">Ödenecek: kayıtlarınıza göre tahmin. Beyan edilen: Vergi / SGK ödemesi olarak girdiğiniz KDV tahakkuku. Farklıysa (kırmızı) eksik veya hatalı kayıt olabilir.</div></div>
+  ${taxReportCard(period)}
   <div class="card"><h2>Geçici vergi dönemleri ${year} <small>kümülatif, bilgi amaçlı</small></h2><div class="tscroll"><table class="t"><thead><tr><th>Dönem</th><th>Gelir</th><th>Gider</th><th>Kâr</th></tr></thead><tbody>${q.map((r) => `<tr><td>${r.q}. dönem (Oca-${AYLAR[r.q * 3 - 1].slice(0, 3)})</td><td>${nf.format(r.gelir)}</td><td>${nf.format(r.gider)}</td><td><b>${nf.format(r.kar)}</b></td></tr>`).join('')}</tbody></table></div>
     <div class="small muted" style="margin-top:6px">Vergi matrahı için mali müşavirinize danışın; burada yalnızca kayıtlı gelir-gider farkı gösterilir.</div></div>
   <div class="card"><h2>Nakit akışı tahmini</h2><div class="tscroll"><table class="t"><thead><tr><th>Süre</th><th>Gelecek tahsilat</th><th>Yapılacak ödeme</th><th>Fark</th></tr></thead><tbody>
@@ -1262,14 +1413,18 @@ function viewSettings() {
     <label class="f">Muhtasar ve prim hizmet<select name="muhtasar"><option value="aylik" ${tx.muhtasar === 'aylik' ? 'selected' : ''}>Aylık (izleyen ayın 26'sı)</option><option value="uc_aylik" ${tx.muhtasar === 'uc_aylik' ? 'selected' : ''}>3 aylık</option><option value="yok" ${tx.muhtasar === 'yok' ? 'selected' : ''}>Yok</option></select></label>
     <label class="chk"><input type="checkbox" name="gecici" ${tx.gecici ? 'checked' : ''}> Geçici vergi (Şubat, Mayıs, Ağustos, Kasım 17'si)</label>
     <label class="chk"><input type="checkbox" name="yillik" ${tx.yillik ? 'checked' : ''}> Yıllık gelir vergisi (Mart ve Temmuz sonu)</label>
-    <div class="small muted" style="margin-bottom:10px">Hafta sonuna denk gelen tarihler pazartesiye kaydırılır. Resmî tatiller ve süre uzatmaları için GİB duyurularını ve mali müşavirinizi takip edin.</div>
+    <div class="small muted" style="margin-bottom:10px">Hafta sonuna denk gelen tarihler pazartesiye kaydırılır. Bayram ve süre uzatmaları FOZ Analytics tarafından internet üzerinden güncellenir.<br>${S.taxRemote ? `Son takvim güncellemesi: <b>${new Date(S.taxRemote.at).toLocaleString('tr-TR')}</b>${remoteCal().surum ? ' (sürüm ' + esc(remoteCal().surum) + ')' : ''}` : 'Takvim güncellemesi henüz alınmadı (internet gerekir).'}</div>
     <button class="btn primary">Kaydet</button></form></div>
-  <div class="card"><h2>Kategoriler <button class="btn sm" data-act="newCat">+ Ekle</button></h2>
-    <div class="hdr">Gider</div><div class="chips" style="flex-wrap:wrap">${S.categories.gider.map((c) => `<span class="chip" data-act="catMenu" data-id="${c.id}">${esc(catName(c.id))}</span>`).join('')}</div>
-    <div class="hdr">Gelir</div><div class="chips" style="flex-wrap:wrap">${S.categories.gelir.map((c) => `<span class="chip" data-act="catMenu" data-id="${c.id}">${esc(catName(c.id))}</span>`).join('')}</div></div>
+  <div class="card"><h2>Tekrarlayan işlemler <small>${S.recurring.length} kural</small></h2>
+    ${S.recurring.length ? S.recurring.map((r) => { const nx = nextOcc(r, r.last); const on = r.active && (!r.end || nx <= r.end); return `<div class="row click" data-act="recForm" data-id="${r.id}"><div class="ic">🔁</div><div class="m"><div class="a">${esc(r.desc || catName(r.categoryId))}</div><div class="b">${FREQ[r.freq]} · ${on ? 'sonraki ' + fd(nx) : 'durduruldu'}${r.partyId ? ' · ' + esc(partyName(r.partyId)) : ''}</div></div><div class="r ${r.type === 'gelir' ? 'pos' : 'neg'}"><b>${money(r.amount)}</b></div></div>`; }).join('') : '<div class="empty">Henüz yok. Gelir/gider eklerken "Bu işlemi tekrarla"yı işaretleyin.</div>'}</div>
+  <div class="card"><h2>Kategoriler <button class="btn sm" data-act="newCat">+ Ekle</button></h2><div class="small muted" style="margin-bottom:6px">Dokunarak varsayılan KDV oranını değiştirin. Sesli kayıt ve yeni işlemler bu oranı kullanır.</div>
+    <div class="hdr">Gider</div><div class="chips" style="flex-wrap:wrap">${S.categories.gider.map((c) => `<span class="chip" data-act="catMenu" data-id="${c.id}">${esc(catName(c.id))} · %${catKdv(c.id)}</span>`).join('')}</div>
+    <div class="hdr">Gelir</div><div class="chips" style="flex-wrap:wrap">${S.categories.gelir.map((c) => `<span class="chip" data-act="catMenu" data-id="${c.id}">${esc(catName(c.id))} · %${catKdv(c.id)}</span>`).join('')}</div></div>
   <div class="card"><h2>Yedekleme ve veri</h2>
+    <div class="small" style="margin-bottom:8px">Son yedek: <b>${S.lastBackup ? fd(S.lastBackup.slice(0, 10)) : 'hiç alınmadı'}</b></div>
+    <label class="f">Yedek hatırlatması<select id="bdaysSel">${[[0, 'Kapalı'], [3, '3 günde bir'], [7, 'Haftada bir'], [14, '2 haftada bir'], [30, 'Ayda bir']].map(([v, l]) => `<option value="${v}" ${Number(S.settings.backupDays) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <div class="btns" style="margin-bottom:8px"><button class="btn primary" data-act="backup">⬇️ Yedek al</button><button class="btn" data-act="backupEnc">🔒 Şifreli yedek</button><button class="btn" data-act="restore">⬆️ Yedekten yükle</button></div>
-    <div class="btns" style="margin-bottom:8px"><button class="btn" data-act="exportCsv">CSV (tüm işlemler)</button><button class="btn" data-act="exportXlsx">Excel (bu ay)</button></div>
+    <div class="btns" style="margin-bottom:8px"><button class="btn" data-act="exportCsv">CSV (tüm işlemler)</button><button class="btn" data-act="exportXlsx">Excel (bu ay)</button><button class="btn" data-act="importData">📥 Excel/CSV içe aktar</button></div>
     <div class="note">Yedeği Google Drive'ınıza veya istediğiniz klasöre kaydedin. Veriler yalnızca bu cihazda/tarayıcıda durur; tarayıcı verisini silerseniz yedek olmadan geri gelmez.</div>
     <div class="btns"><button class="btn" data-act="loadSample">Örnek veri yükle</button><button class="btn danger" data-act="resetAll">Tüm verileri sil</button></div></div>
   <div class="card"><h2>Görünüm ve kurulum</h2>
@@ -1364,15 +1519,16 @@ function accountantSheets(period) {
   const inP = S.tx.filter((t) => t.date.startsWith(period)).sort((a, b) => a.date.localeCompare(b.date));
   const ozet = [['Kalem', 'Tutar (TL)'], ['Dönem', period.length === 7 ? ymLabel(period) : period + ' yılı'], ['Firma', S.settings.firma || ''], ['VKN/TCKN', S.settings.vkn || ''],
     ['Gelir (KDV hariç)', s.gelir], ['Hesaplanan KDV', s.gelirKdv], ['KDV tevkifatı', s.tevk], ['Gider (KDV hariç)', s.gider], ['İndirilecek KDV', s.giderKdv], ['Net kâr (bilgi amaçlı)', s.net], ['Kesilen stopaj', s.stopaj], ['İşletmeden çekilen', s.cekis], ['Hazırlanma', fd(today()) + ' · FOZ Defter v' + VERSION]];
-  const head = ['Tarih', 'Belge No', 'Cari', 'VKN/TCKN', 'Kategori', 'Açıklama', 'Matrah', 'KDV %', 'KDV', 'Toplam', 'Hesap', 'Kaynak', 'Fotoğraf'];
-  const line = (t) => [{ d: t.date }, t.docNo || '', partyName(t.partyId), (party(t.partyId) || {}).vkn || '', catName(t.categoryId), t.desc || '', t.matrah, t.kdvRate || 0, t.kdv || 0, t.amount, t.accountId ? accName(t.accountId) : (S.debts.find((d) => d.linkedTxId === t.id) ? 'Vadeli (cari)' : ''), t.source || '', t.photoId ? 'Var' : ''];
+  const head = ['Tarih', 'Belge No', 'Belge Türü', 'Cari', 'VKN/TCKN', 'Kategori', 'Açıklama', 'Matrah', 'KDV %', 'KDV', 'Toplam', 'Hesap', 'Kaynak', 'Fotoğraf'];
+  const line = (t) => [{ d: t.date }, t.docNo || '', docLabel(t.docType || (t.source === 'esmm' ? 'esmm' : '')), partyName(t.partyId), (party(t.partyId) || {}).vkn || '', catName(t.categoryId), t.desc || '', t.matrah, t.kdvRate || 0, t.kdv || 0, t.amount, t.accountId ? accName(t.accountId) : (S.debts.find((d) => d.linkedTxId === t.id) ? 'Vadeli (cari)' : ''), t.source || '', t.photoId ? 'Var' : ''];
   const gel = [[...head, 'Stopaj', 'Tevkifat'], ...inP.filter((t) => t.type === 'gelir').map((t) => [...line(t), t.stopaj || 0, t.tevk || 0])];
   const gid = [head, ...inP.filter((t) => t.type === 'gider').map(line)];
   const es = [['Tarih', 'Makbuz No', 'Müşteri', 'VKN/TCKN', 'Brüt', 'Stopaj %', 'Stopaj', 'KDV %', 'KDV', 'KDV Tevkifatı', 'Net Tahsil', 'Açıklama'], ...S.esmm.filter((e) => e.date.startsWith(period)).sort((a, b) => a.date.localeCompare(b.date)).map((e) => [{ d: e.date }, e.no, partyName(e.partyId), (party(e.partyId) || {}).vkn || '', e.brut, e.stopajRate, e.stopaj, e.kdvRate, e.kdv, e.tevk, e.net, e.desc])];
-  const kd = [['Ay', 'Hesaplanan KDV', 'Tevkifat', 'İndirilecek KDV', 'Devreden (gelen)', 'Ödenecek', 'Devreden (sonraki)'], ...kdvTable(period.slice(0, 4)).map((r) => [ymLabel(r.ym), r.hesaplanan, r.tevk, r.indirilecek, r.devirGelen, r.odenecek, r.devreden])];
+  const kd = [['Ay', 'Hesaplanan KDV', 'Tevkifat', 'İndirilecek KDV', 'Devreden (gelen)', 'Ödenecek (tahmin)', 'Devreden (sonraki)', 'Beyan edilen'], ...kdvTable(period.slice(0, 4)).map((r) => [ymLabel(r.ym), r.hesaplanan, r.tevk, r.indirilecek, r.devirGelen, r.odenecek, r.devreden, kdvBeyan(r.ym) ?? ''])];
+  const vs = [['Tür', 'Dönem', 'Son Ödeme', 'Tahakkuk', 'Ödenen', 'Kalan', 'Durum', 'Ödeme Tarihi', 'Gider Yazılır', 'Açıklama'], ...taxDebtsFor(period.slice(0, 4)).map((d) => [TAX_KINDS[d.tax.kind].l, donemLabel(d.tax), { d: d.due }, d.amount, paidOf(d), remOf(d), STATUS_LABEL[statusOf(d)], lastPayDate(d) ? { d: lastPayDate(d) } : '', d.tax.gider ? 'Evet' : 'Hayır', d.desc || ''])];
   const cb = [['Cari', 'Tür', 'VKN/TCKN', 'Vergi Dairesi', 'Açık Alacak', 'Açık Borç', 'Net'], ...S.parties.map((p) => { const b = partyBalance(p.id); return [p.name, PARTY_TYPES[p.type] || '', p.vkn || '', p.vergiDairesi || '', b.alacak, b.borc, b.net]; })];
-  const vd = [['Cari', 'Yön', 'İşlem Tarihi', 'Vade', 'Tutar', 'Ödenen', 'Kalan', 'Durum', 'Son Ödeme Tarihi', 'Açıklama'], ...[...S.debts].sort((a, b) => a.due.localeCompare(b.due)).map((d) => [partyName(d.partyId), d.dir === 'borc' ? 'Borç' : 'Alacak', { d: d.date }, { d: d.due }, d.amount, paidOf(d), remOf(d), STATUS_LABEL[statusOf(d)], lastPayDate(d) ? { d: lastPayDate(d) } : '', d.desc || ''])];
-  return [{ name: 'Özet', rows: ozet }, { name: 'Gelirler', rows: gel }, { name: 'Giderler', rows: gid }, { name: 'e-SMM', rows: es }, { name: 'KDV Özeti', rows: kd }, { name: 'Cari Bakiyeler', rows: cb }, { name: 'Vadeler', rows: vd }];
+  const vd = [['Cari', 'Yön', 'İşlem Tarihi', 'Vade', 'Tutar', 'Ödenen', 'Kalan', 'Durum', 'Son Ödeme Tarihi', 'Açıklama'], ...[...S.debts].sort((a, b) => a.due.localeCompare(b.due)).map((d) => [debtTitle(d), d.dir === 'borc' ? 'Borç' : 'Alacak', { d: d.date }, { d: d.due }, d.amount, paidOf(d), remOf(d), STATUS_LABEL[statusOf(d)], lastPayDate(d) ? { d: lastPayDate(d) } : '', d.desc || ''])];
+  return [{ name: 'Özet', rows: ozet }, { name: 'Gelirler', rows: gel }, { name: 'Giderler', rows: gid }, { name: 'e-SMM', rows: es }, { name: 'KDV Özeti', rows: kd }, { name: 'Vergi-SGK', rows: vs }, { name: 'Cari Bakiyeler', rows: cb }, { name: 'Vadeler', rows: vd }];
 }
 let dlCap = null;
 try { if (window.claude && typeof window.claude.use === 'function') window.claude.use('downloads').then((d) => { dlCap = d; }).catch(() => {}); } catch (e) { }
@@ -1404,6 +1560,7 @@ const b64 = { enc(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) 
 async function deriveKey(pw, salt) { const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']); return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 200000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']); }
 async function makeBackup(password) {
   const photos = {}; for (const k of await DB.keys('files')) { const b = await DB.get('files', k); if (b) photos[k] = b64.enc(new Uint8Array(await b.arrayBuffer())); }
+  S.lastBackup = new Date().toISOString(); S.backupSnooze = null; save();
   const payload = JSON.stringify({ state: S, photos });
   let out;
   if (password) {
@@ -1466,17 +1623,207 @@ function loadSample() {
 }
 
 /* ---------- eylemler ---------- */
+/* ---------- vergi raporu, yedek ve duyuru yardımcıları ---------- */
+function kdvBeyan(ym) { const ds = S.debts.filter((d) => d.tax && d.tax.kind === 'kdv' && d.tax.donem === ym); return ds.length ? r2(ds.reduce((a, d) => a + d.amount, 0)) : null; }
+function taxDebtsFor(period) { return S.debts.filter((d) => d.tax && (period.length === 4 ? (d.tax.donem.startsWith(period) || d.due.startsWith(period)) : (d.due.startsWith(period) || d.tax.donem === period))).sort((a, b) => a.due.localeCompare(b.due)); }
+function taxReportCard(period) {
+  const ds = taxDebtsFor(period); const tot = (f) => r2(ds.reduce((a, d) => a + f(d), 0));
+  const paidIn = r2(S.debts.filter((d) => d.tax).flatMap((d) => d.payments).filter((p) => p.date.startsWith(period)).reduce((a, p) => a + p.amount, 0));
+  return `<div class="card"><h2>Vergi ve SGK ödemeleri <small>bu dönemde ödenen ${money(paidIn)}</small></h2>
+    ${ds.length ? `<div class="tscroll"><table class="t"><thead><tr><th>Tür</th><th>Dönem</th><th>Son gün</th><th>Tahakkuk</th><th>Ödenen</th><th>Kalan</th><th>Durum</th></tr></thead><tbody>
+    ${ds.map((d) => `<tr class="click" data-act="debtDetail" data-id="${d.id}" style="cursor:pointer"><td>${esc(TAX_KINDS[d.tax.kind].l)}</td><td>${esc(donemLabel(d.tax))}</td><td>${fd(d.due)}</td><td>${nf.format(d.amount)}</td><td>${nf.format(paidOf(d))}</td><td>${nf.format(remOf(d))}</td><td>${statusPill(d)}</td></tr>`).join('')}
+    <tr><td><b>Toplam</b></td><td></td><td></td><td><b>${nf.format(tot((d) => d.amount))}</b></td><td><b>${nf.format(tot(paidOf))}</b></td><td><b>${nf.format(tot(remOf))}</b></td><td></td></tr></tbody></table></div>` : '<div class="empty">Bu dönemde vergi / SGK kaydı yok</div>'}
+    <button class="btn primary block" style="margin-top:8px" data-act="newTax">+ Vergi / SGK ödemesi</button></div>`;
+}
+function backupDue() {
+  const n = Number(S.settings.backupDays) || 0; if (!n) return false;
+  if (!S.tx.length && !S.debts.length) return false;
+  if (S.backupSnooze && S.backupSnooze > today()) return false;
+  const days = S.lastBackup ? diffDays(today(), S.lastBackup.slice(0, 10)) : Infinity;
+  return days >= n ? days : false;
+}
+function activeAnns(unseenOnly) { const t = today(); return (remoteCal().duyurular || []).filter((a) => a && a.id && (!a.baslangic || normDate(a.baslangic) <= t) && (!a.bitis || normDate(a.bitis) >= t) && (!unseenOnly || !S.seenAnn[a.id])); }
+let calFetching = false;
+async function fetchTaxCal() {
+  if (calFetching || !/^https?:$/.test(location.protocol)) return; calFetching = true;
+  try {
+    const r = await fetch(CAL_URL + '?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) return;
+    const j = await r.json(); if (!j || typeof j !== 'object') return;
+    const changed = JSON.stringify(j) !== JSON.stringify(remoteCal());
+    S.taxRemote = { at: Date.now(), data: j }; save(); if (changed) { render(); checkNotifs(); }
+  } catch (e) { } finally { calFetching = false; }
+}
+
+/* ---------- içe aktarma (CSV / XLSX) ---------- */
+function parseCSV(text) {
+  text = text.replace(/^﻿/, ''); const first = (text.split(/\r?\n/).find((l) => l.trim()) || '');
+  const cnt = (ch) => first.split(ch).length - 1; const delim = [';', '\t', ','].sort((a, b) => cnt(b) - cnt(a))[0];
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += c; continue; }
+    if (c === '"') q = true; else if (c === delim) { row.push(cell); cell = ''; } else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(cell); rows.push(row); row = []; cell = ''; } else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.some((x) => String(x).trim() !== ''));
+}
+async function inflateRaw(u8) { const ds = new DecompressionStream('deflate-raw'); const out = new Response(new Blob([u8]).stream().pipeThrough(ds)); return new Uint8Array(await out.arrayBuffer()); }
+async function unzip(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf); let eocd = -1;
+  for (let i = u8.length - 22; i >= Math.max(0, u8.length - 70000); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('Geçersiz XLSX dosyası');
+  const n = dv.getUint16(eocd + 10, true); let off = dv.getUint32(eocd + 16, true); const files = {}; const dec = new TextDecoder();
+  for (let k = 0; k < n; k++) {
+    const method = dv.getUint16(off + 10, true), csize = dv.getUint32(off + 20, true), nlen = dv.getUint16(off + 28, true), elen = dv.getUint16(off + 30, true), clen = dv.getUint16(off + 32, true), lho = dv.getUint32(off + 42, true);
+    const name = dec.decode(u8.subarray(off + 46, off + 46 + nlen));
+    files[name] = { method, csize, lho }; off += 46 + nlen + elen + clen;
+  }
+  return { names: Object.keys(files), async read(name) { const f = files[name]; if (!f) return null; const ln = dv.getUint16(f.lho + 26, true), le = dv.getUint16(f.lho + 28, true); const start = f.lho + 30 + ln + le; const data = u8.subarray(start, start + f.csize); const raw = f.method === 0 ? data : await inflateRaw(data); return dec.decode(raw); } };
+}
+async function readXlsx(buf) {
+  const z = await unzip(buf); const P = (x) => new DOMParser().parseFromString(x, 'application/xml'); const T = (doc, tag) => Array.from(doc.getElementsByTagNameNS('*', tag));
+  let sheetPath = 'xl/worksheets/sheet1.xml';
+  try {
+    const wb = P(await z.read('xl/workbook.xml')); const first = T(wb, 'sheet')[0]; const rid = first && (first.getAttribute('r:id') || first.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id'));
+    const rels = P(await z.read('xl/_rels/workbook.xml.rels')); const rel = T(rels, 'Relationship').find((r) => r.getAttribute('Id') === rid);
+    if (rel) { const tg = rel.getAttribute('Target'); sheetPath = tg.startsWith('/') ? tg.slice(1) : 'xl/' + tg.replace(/^\.\//, ''); }
+  } catch (e) { }
+  const ssx = await z.read('xl/sharedStrings.xml'); const ss = ssx ? T(P(ssx), 'si').map((si) => T(si, 't').map((t) => t.textContent).join('')) : [];
+  const sx = await z.read(sheetPath); if (!sx) throw new Error('Sayfa bulunamadı');
+  const colIdx = (ref) => { const m = ref.match(/^[A-Z]+/); let n = 0; for (const ch of m[0]) n = n * 26 + ch.charCodeAt(0) - 64; return n - 1; };
+  const rows = [];
+  for (const r of T(P(sx), 'row')) {
+    const arr = [];
+    for (const c of T(r, 'c')) {
+      const ref = c.getAttribute('r'); const i = ref ? colIdx(ref) : arr.length; const t = c.getAttribute('t'); const vEl = T(c, 'v')[0];
+      let val = '';
+      if (t === 's') val = ss[Number(vEl && vEl.textContent)] ?? ''; else if (t === 'inlineStr') val = T(c, 't').map((x) => x.textContent).join(''); else if (vEl) val = t === 'str' || t === 'b' ? vEl.textContent : Number(vEl.textContent);
+      arr[i] = val;
+    }
+    if (arr.some((x) => x !== undefined && String(x).trim() !== '')) rows.push(Array.from(arr, (x) => (x === undefined ? '' : x)));
+  }
+  return rows;
+}
+function parseAnyDate(v) {
+  if (typeof v === 'number' || /^\d{5}(\.\d+)?$/.test(String(v).trim())) { const n = Number(v); if (n > 20000 && n < 80000) { const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(n) * 86400000); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); } return null; }
+  const s = String(v || '').trim().split(/\s+|T/)[0]; let m;
+  if ((m = s.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/))) return valid(m[1], m[2], m[3]);
+  if ((m = s.match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})$/))) return valid(m[3].length === 2 ? '20' + m[3] : m[3], m[2], m[1]);
+  return null;
+  function valid(y, mo, d) { mo = Number(mo); d = Number(d); if (mo < 1 || mo > 12 || d < 1 || d > 31) return null; return y + '-' + pad(mo) + '-' + pad(d); }
+}
+const IMPORT_FIELDS = [['date', 'Tarih *', /tarih|date|valör/], ['type', 'Tür (gelir/gider)', /^tür$|^tur$|işlem türü|^tip$|^type$/], ['amount', 'Tutar (eksi = gider)', /^toplam$|^tutar$|amount|işlem tutarı|tutar \(tl\)|^tutar /], ['out', 'Gider / Borç sütunu', /^borç$|^borc$|çıkan|^gider$|debit|harcama/], ['inn', 'Gelir / Alacak sütunu', /^alacak$|giren|^gelir$|credit|yatan/], ['desc', 'Açıklama', /açıklama|aciklama|description|detay|^işlem$|explanation/], ['category', 'Kategori', /kategori|category/], ['party', 'Cari', /cari|müşteri|firma|tedarikçi|karşı taraf/], ['kdv', 'KDV %', /kdv ?%|kdv oran/], ['docNo', 'Belge no', /belge no|fatura no|fiş no|dekont|belge/]];
+async function importData() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.csv,.txt,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    try {
+      let rows;
+      if (/\.xlsx$/i.test(file.name)) rows = await readXlsx(await file.arrayBuffer());
+      else { const buf = await file.arrayBuffer(); let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('�')) txt = new TextDecoder('windows-1254').decode(buf); rows = parseCSV(txt); }
+      if (!rows || rows.length < 1) { toast('Dosyada satır bulunamadı'); return; }
+      importMapper(file.name, rows);
+    } catch (e) { toast('Dosya okunamadı: ' + e.message); }
+  };
+  inp.click();
+}
+function importMapper(name, rows) {
+  const width = Math.max(...rows.slice(0, 50).map((r) => r.length));
+  const hdrGuess = rows[0].filter((x) => typeof x === 'string' && x.trim() && !parseAnyDate(x) && !(parseNum(x) && /^[\d\s.,()+-]+$/.test(x))).length >= Math.ceil(width / 2);
+  const colName = (i, hdr) => (hdr && String(rows[0][i] ?? '').trim()) || ('Sütun ' + String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : ''));
+  const guess = (hdr) => { const used = new Set(), map = {}; if (!hdr) return map; for (const [k, , re] of IMPORT_FIELDS) { for (let i = 0; i < width; i++) { if (used.has(i)) continue; if (re.test(lower(String(rows[0][i] ?? '').trim()))) { map[k] = i; used.add(i); break; } } } if (map.amount != null && (map.out != null || map.inn != null)) delete map.amount; return map; };
+  const html = (hdr) => { const map = guess(hdr); return `<div class="small muted" style="margin-bottom:8px">${esc(name)} · ${rows.length} satır</div>
+    <label class="chk"><input type="checkbox" id="imHdr" ${hdr ? 'checked' : ''}> İlk satır başlık</label>
+    <div class="hdr">Sütun eşleme</div>
+    ${IMPORT_FIELDS.map(([k, l]) => `<label class="f">${l}<select data-map="${k}"><option value="">— Yok —</option>${Array.from({ length: width }, (_, i) => `<option value="${i}" ${map[k] === i ? 'selected' : ''}>${esc(colName(i, hdr))}</option>`).join('')}</select></label>`).join('')}
+    <label class="f">Hangi hesaba<select id="imAcc">${accOptions(S.settings.defaultAccount)}</select></label>
+    <label class="chk"><input type="checkbox" id="imGuess" checked> Kategori yoksa açıklamadan tahmin et</label>
+    <label class="chk"><input type="checkbox" id="imKdv"> KDV sütunu yoksa kategorinin varsayılan KDV'sini uygula</label>
+    <label class="chk"><input type="checkbox" id="imParty" checked> Bulunamayan carileri oluştur</label>
+    <label class="chk"><input type="checkbox" id="imDup" checked> Aynı tarih, tutar ve açıklamalı kayıtları atla</label>
+    <div class="note">Banka ekstresi: Tarih, Açıklama ve Borç/Alacak (ya da işaretli Tutar) sütunlarını eşleyin. FOZ Defter'in CSV çıktısı otomatik tanınır.</div>
+    <button class="btn block" id="imPrev">Önizle</button><div id="imOut"></div>`; };
+  const mount = (hdr) => openSheet('Excel / CSV içe aktar', html(hdr), (b) => {
+    $('#imHdr', b).onchange = (e) => mount(e.target.checked);
+    const build = () => {
+      const m = {}; $$('[data-map]', b).forEach((s) => { if (s.value !== '') m[s.dataset.map] = Number(s.value); });
+      if (m.date == null || (m.amount == null && m.out == null && m.inn == null)) return { err: 'Tarih ve en az bir tutar sütunu seçin.' };
+      const opt = { acc: $('#imAcc', b).value, guess: $('#imGuess', b).checked, kdv: $('#imKdv', b).checked, party: $('#imParty', b).checked, dup: $('#imDup', b).checked };
+      const out = [], stats = { skip: 0, dup: 0, transfer: 0 }; const newParties = {};
+      for (const row of rows.slice(hdr ? 1 : 0)) {
+        const cell = (k) => (m[k] == null ? '' : row[m[k]] ?? '');
+        const date = parseAnyDate(cell('date')); if (!date) { stats.skip++; continue; }
+        let type = null, amt = 0; const tt = lower(String(cell('type')));
+        if (m.amount != null) { const a = parseNum(cell('amount')); amt = Math.abs(a); if (/gelir|tahsil|giriş|alacak/.test(tt)) type = 'gelir'; else if (/gider|ödeme|çıkış|borç/.test(tt)) type = 'gider'; else if (/çekil|çekiş/.test(tt)) type = 'cekis'; else if (/transfer/.test(tt)) { stats.transfer++; continue; } else type = a < 0 ? 'gider' : 'gelir'; }
+        else { const o = Math.abs(parseNum(cell('out'))), i = Math.abs(parseNum(cell('inn'))); if (o > 0) { type = 'gider'; amt = o; } else if (i > 0) { type = 'gelir'; amt = i; } }
+        amt = r2(amt); if (!(amt > 0) || !type) { stats.skip++; continue; }
+        const desc = String(cell('desc')).trim(); const ld = lower(desc);
+        let categoryId = null;
+        if (type !== 'cekis') {
+          const cn = lower(String(cell('category')).trim()); const list = S.categories[type];
+          const hit = cn && list.find((c) => lower(c.name) === cn || lower(catName(c.id)) === cn || lower(catName(c.id)).endsWith(cn));
+          if (hit) categoryId = hit.id;
+          else if (opt.guess) for (const [re, id] of type === 'gider' ? CAT_KEYS : GELIR_KEYS) if (re.test(ld)) { categoryId = id; break; }
+          if (!categoryId) categoryId = type === 'gider' ? 'g-diger' : 'i-diger';
+        }
+        let kr = 0; const kv = String(cell('kdv')).replace('%', '').trim();
+        if (kv !== '' && [0, 1, 8, 10, 18, 20].includes(Number(parseNum(kv)))) kr = Number(parseNum(kv)); else if (opt.kdv && categoryId) kr = catKdv(categoryId);
+        if (type === 'cekis') kr = 0;
+        const pn = String(cell('party')).trim(); let partyId = null, newParty = null;
+        if (pn && type !== 'cekis') { const p = S.parties.find((x) => lower(x.name) === lower(pn)); if (p) partyId = p.id; else if (opt.party) { newParty = pn; } }
+        const isDup = opt.dup && S.tx.some((t) => t.date === date && Math.abs(t.amount - amt) < 0.01 && lower(t.desc || '') === ld);
+        if (isDup) { stats.dup++; continue; }
+        out.push({ date, type, amt, kr, categoryId, partyId, newParty, desc, docNo: String(cell('docNo')).trim() });
+        if (newParty) newParties[lower(newParty)] = newParty;
+      }
+      return { out, stats, opt, newParties };
+    };
+    $('#imPrev', b).onclick = () => {
+      const r = build(); const box = $('#imOut', b);
+      if (r.err) { box.innerHTML = `<div class="note w">${esc(r.err)}</div>`; return; }
+      const np = Object.keys(r.newParties).length;
+      box.innerHTML = `<div class="hdr">Önizleme</div><div class="small" style="margin-bottom:6px"><b>${r.out.length}</b> kayıt eklenecek${r.stats.dup ? ` · ${r.stats.dup} mükerrer atlanacak` : ''}${r.stats.skip ? ` · ${r.stats.skip} satır okunamadı` : ''}${r.stats.transfer ? ` · ${r.stats.transfer} transfer atlanacak` : ''}${np ? ` · ${np} yeni cari` : ''}</div>
+        <div class="tscroll"><table class="t"><thead><tr><th>Tarih</th><th>Tür</th><th>Tutar</th><th>Kategori</th><th>Açıklama</th></tr></thead><tbody>${r.out.slice(0, 8).map((x) => `<tr><td>${fd(x.date)}</td><td>${TX_TYPES[x.type]}</td><td class="${x.type === 'gelir' ? 'pos' : 'neg'}">${nf.format(x.amt)}</td><td>${esc(catName(x.categoryId))}</td><td style="text-align:left;max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(x.desc)}</td></tr>`).join('')}</tbody></table></div>
+        ${r.out.length ? `<button class="btn primary block" style="margin-top:10px" id="imGo">${r.out.length} kaydı içe aktar</button>` : ''}`;
+      const go = $('#imGo', b); if (go) go.onclick = () => {
+        const pmap = {};
+        for (const k in r.newParties) { const x = r.out.find((o) => o.newParty && lower(o.newParty) === k); const p = { id: uid(), name: r.newParties[k], type: x && x.type === 'gelir' ? 'musteri' : 'tedarikci', vkn: '', vergiDairesi: '', tel: '', email: '', note: '' }; S.parties.push(p); pmap[k] = p.id; }
+        for (const x of r.out) { const mt = r2(x.amt / (1 + x.kr / 100)); S.tx.push({ id: uid(), created: Date.now(), type: x.type, date: x.date, amount: x.amt, matrah: mt, kdv: r2(x.amt - mt), kdvRate: x.kr, categoryId: x.categoryId, accountId: r.opt.acc, partyId: x.partyId || (x.newParty ? pmap[lower(x.newParty)] : null), desc: x.desc, docNo: x.docNo, source: 'ice-aktarma' }); }
+        save(); closeSheet(); render(); toast(r.out.length + ' kayıt içe aktarıldı');
+      };
+    };
+  });
+  mount(hdrGuess);
+}
+function catEditForm(id) {
+  const c = cat(id); if (!c) return; const type = S.categories.gider.includes(c) ? 'gider' : 'gelir';
+  openSheet('Kategori: ' + catName(id), `<form id="cef">${c.custom ? `<label class="f">Ad<input name="cname" value="${esc(c.name)}" required></label>` : ''}
+    <label class="f">Varsayılan KDV oranı<select name="kdv"><option value="">Genel varsayılan (%${S.settings.kdvDefault})</option>${[0, 1, 10, 20].map((r) => `<option value="${r}" ${c.kdv != null && Number(c.kdv) === r ? 'selected' : ''}>%${r}</option>`).join('')}</select></label>
+    <div class="small muted" style="margin:-4px 0 10px">Bu kategoride yeni işlem, sesli kayıt ve içe aktarmada önerilen oran.</div>
+    <button class="btn primary block">Kaydet</button>${c.custom ? '<button type="button" class="btn danger block" style="margin-top:8px" id="delC">Kategoriyi sil</button>' : ''}</form>`, (b) => {
+    const f = $('#cef', b);
+    if (c.custom) $('#delC', b).onclick = async () => { if (S.tx.some((t) => t.categoryId === c.id)) { toast('Bu kategoride işlem var'); return; } if (await askConfirm(c.name + ' kategorisi silinsin mi?', 'Sil')) { S.categories[type] = S.categories[type].filter((x) => x.id !== c.id && x.parent !== c.id); save(); render(); } else catEditForm(id); };
+    f.onsubmit = (e) => { e.preventDefault(); if (c.custom) c.name = f.cname.value.trim() || c.name; if (f.kdv.value === '') delete c.kdv; else c.kdv = Number(f.kdv.value); save(); closeSheet(); render(); toast('Kaydedildi'); };
+  });
+}
+
 let deferredInstall = null;
 const ACT = {
   tab: (d) => { UI.tab = d.tab; render(); window.scrollTo(0, 0); },
   closeSheet: () => closeSheet(),
   toggleTheme: () => { S.settings.theme = S.settings.theme === 'light' ? 'dark' : 'light'; applyTheme(); save(); render(); },
   fabMenu: () => openSheet('Yeni kayıt', `<div class="grid2">
-    ${[['newTx', 'gider', '↑', 'Gider'], ['newTx', 'gelir', '↓', 'Gelir'], ['newEsmm', '', '🧾', 'e-SMM'], ['newDebt', '', '🤝', 'Borç / Alacak'], ['scanQR', '', '⌗', 'QR okut (e-Fatura)'], ['scanReceipt', '', '📷', 'Fiş fotoğrafı'], ['voice', '', '🎙️', 'Sesli / yazılı kayıt'], ['newTx', 'transfer', '⇄', 'Transfer / kart ödemesi'], ['newTx', 'cekis', '↗', 'İşletmeden çekilen'], ['newParty', '', '🏢', 'Yeni cari']].map(([a, t, i, l]) => `<div class="qa" data-act="${a}" data-type="${t}"><b>${i}</b>${l}</div>`).join('')}</div>`),
+    ${[['newTx', 'gider', '↑', 'Gider'], ['newTx', 'gelir', '↓', 'Gelir'], ['newEsmm', '', '🧾', 'e-SMM'], ['newDebt', '', '🤝', 'Borç / Alacak'], ['newTax', '', '🏛️', 'Vergi / SGK ödemesi'], ['scanQR', '', '⌗', 'QR okut (e-Fatura)'], ['scanReceipt', '', '📷', 'Fiş fotoğrafı'], ['voice', '', '🎙️', 'Sesli / yazılı kayıt'], ['newTx', 'transfer', '⇄', 'Transfer / kart ödemesi'], ['newTx', 'cekis', '↗', 'İşletmeden çekilen'], ['newParty', '', '🏢', 'Yeni cari']].map(([a, t, i, l]) => `<div class="qa" data-act="${a}" data-type="${t}"><b>${i}</b>${l}</div>`).join('')}</div>`),
   newTx: (d) => txForm({ type: d.type || 'gider' }),
   editTx: (d) => txForm({}, d.id),
   newDebt: (d) => debtForm(d.party ? { partyId: d.party, dir: (party(d.party) || {}).type === 'musteri' ? 'alacak' : 'borc' } : {}),
-  editDebt: (d) => debtForm({}, d.id),
+  editDebt: (d) => { const x = debt(d.id); if (x && x.tax) taxForm({}, d.id); else debtForm({}, d.id); },
+  newTax: () => taxForm(),
+  taxFromCal: (d) => taxForm({ kind: d.tk === 'gelir2' ? 'gelir' : d.tk, donem: d.donem || addMonths(ymOf(today()), -1), due: d.due }),
+  recForm: (d) => recForm(d.id),
+  importData: () => importData(),
+  backupSnooze: () => { S.backupSnooze = addDays(today(), 3); save(); render(); toast('3 gün sonra hatırlatılacak'); },
+  dismissAnn: (d) => { S.seenAnn[d.id] = true; save(); render(); },
   debtDetail: (d, el, e) => { if (e.target.closest('[data-act="pay"]')) return; debtDetail(d.id); },
   pay: (d, el, e) => { e.stopPropagation(); payForm(d.id); },
   delPay: async (d) => { const x = debt(d.debt); if (!x) return; if (await askConfirm('Bu ödeme silinsin mi?', 'Sil')) { const p = x.payments.find((y) => y.id === d.id); if (p && p.txId) S.tx = S.tx.filter((t) => t.id !== p.txId); x.payments = x.payments.filter((y) => y.id !== d.id); save(); render(); } debtDetail(x.id); },
@@ -1501,7 +1848,8 @@ const ACT = {
   askNotif: () => askNotifPermission(),
   testNotif: async () => { if (!('Notification' in window) || Notification.permission !== 'granted') { toast('Önce bildirim izni verin'); return; } const ok = await showNotif('🔔 FOZ Defter test bildirimi', 'Vade bildirimleri bu şekilde görünecek.', 'test-' + Date.now()); toast(ok ? 'Test bildirimi gönderildi' : 'Bildirim gösterilemedi'); },
   newAcc: () => accForm(), editAcc: (d) => accForm(d.id), newCat: () => catForm(),
-  catMenu: async (d) => { const c = cat(d.id); if (!c.custom) { toast('Hazır kategoriler silinemez'); return; } if (S.tx.some((t) => t.categoryId === c.id)) { toast('Bu kategoride işlem var'); return; } if (await askConfirm(c.name + ' kategorisi silinsin mi?', 'Sil')) { for (const k of ['gider', 'gelir']) S.categories[k] = S.categories[k].filter((x) => x.id !== c.id && x.parent !== c.id); save(); render(); } },
+  catMenu: (d) => catEditForm(d.id),
+  catMenuOld: async (d) => { const c = cat(d.id); if (!c.custom) { toast('Hazır kategoriler silinemez'); return; } if (S.tx.some((t) => t.categoryId === c.id)) { toast('Bu kategoride işlem var'); return; } if (await askConfirm(c.name + ' kategorisi silinsin mi?', 'Sil')) { for (const k of ['gider', 'gelir']) S.categories[k] = S.categories[k].filter((x) => x.id !== c.id && x.parent !== c.id); save(); render(); } },
   backup: () => makeBackup(null),
   backupEnc: async () => { const pw = await askText('Şifreli yedek', 'Yedek şifresi (unutmayın, kurtarılamaz)', 'password'); if (pw && pw.length >= 4) makeBackup(pw); else toast('En az 4 karakter'); },
   restore: () => { const i = $('#jsonPick'); i.value = ''; i.onchange = () => i.files[0] && restoreBackup(i.files[0]); i.click(); },
@@ -1519,6 +1867,7 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'txSearch') { UI.txSearch = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#txSearch'); n.focus(); n.setSelectionRange(pos, pos); }
   if (e.target.id === 'cariSearch') { UI.cariSearch = e.target.value; const pos = e.target.selectionStart; render(); const n = $('#cariSearch'); n.focus(); n.setSelectionRange(pos, pos); }
 });
+document.addEventListener('change', (e) => { if (e.target.id === 'bdaysSel') { S.settings.backupDays = Number(e.target.value); save(); toast('Kaydedildi'); } });
 document.addEventListener('submit', (e) => {
   const f = e.target;
   if (f.id === 'firmF') { e.preventDefault(); const st = S.settings; st.firma = f.firma.value.trim(); st.vkn = f.vkn.value.trim(); st.vergiDairesi = f.vergiDairesi.value.trim(); st.kdvDefault = Number(f.kdvDefault.value); st.stopajRate = parseNum(f.stopajRate.value); st.stopajDefault = f.stopajDefault.checked; st.defaultAccount = f.defaultAccount.value; save(); toast('Kaydedildi'); render(); }
@@ -1532,7 +1881,7 @@ function render() {
   const v = { home: viewHome, tx: viewTx, cari: viewCari, report: viewReport, settings: viewSettings }[UI.tab] || viewHome;
   $('#view').innerHTML = v();
   $$('#nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === UI.tab));
-  const t = today(); const cnt = agenda(7).filter((x) => x.kind !== 'tax' || x.due <= addDays(t, 3)).length;
+  const t = today(); const cnt = agenda(7).filter((x) => x.kind !== 'rec' && (x.kind !== 'tax' || x.due <= addDays(t, 3))).length;
   const bb = $('#bellBadge'); bb.hidden = !cnt; bb.textContent = cnt;
 }
 function handleUrlAction(urlStr) {
@@ -1551,13 +1900,16 @@ function handleUrlAction(urlStr) {
   if (!DB.ok) setTimeout(() => toast('⚠️ Tarayıcı depolaması kullanılamıyor; veriler sayfa kapanınca kaybolur. Yedek alın.'), 800);
   applyTheme(); render();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
+  runRecurring();
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-    try { await navigator.serviceWorker.register('sw.js'); } catch (e) { }
+    const hadCtrl = !!navigator.serviceWorker.controller; let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadCtrl && !reloading) { reloading = true; flush().then(() => location.reload()); } });
+    try { const reg = await navigator.serviceWorker.register('sw.js'); reg.update().catch(() => {}); } catch (e) { }
     navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'notif-action') handleUrlAction(e.data.url); });
   }
   handleUrlAction(location.href);
-  checkNotifs(); setInterval(checkNotifs, 60000);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); else { render(); checkNotifs(); } });
+  checkNotifs(); setInterval(checkNotifs, 60000); fetchTaxCal(); setInterval(() => { runRecurring(); fetchTaxCal(); }, 3600000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); else { runRecurring(); render(); checkNotifs(); fetchTaxCal(); } });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; if (UI.tab === 'settings') render(); });
 })();
 </script>

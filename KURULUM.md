@@ -1,4 +1,4 @@
-# FOZ Defter - Ön Muhasebe · v0.1 test sürümü
+# FOZ Defter - Ön Muhasebe · v0.2 test sürümü
 
 ## Bilgisayarda hızlı deneme
 1. ZIP'i bir klasöre açın.
@@ -30,9 +30,22 @@ Not: Dosyadan açıldığında bildirimler ve "uygulama olarak yükle" çalışm
 - [ ] Cari ekstre → yazdır / PDF
 - [ ] Yedek al → Tüm verileri sil → Yedekten yükle
 
+### v0.2 ile gelenler
+- [ ] + → Vergi / SGK ödemesi: KDV tahakkukunu gir, son gün otomatik geliyor mu? "Bugün ödendi"
+- [ ] Rapor → KDV özetinde "Beyan edilen" sütunu ve Vergi ve SGK ödemeleri tablosu
+- [ ] Gelir formunda Belge türü ve Gelişmiş → KDV tevkifatı / stopaj, net tahsil hesabı
+- [ ] Kategori seçince KDV oranı kendiliğinden geliyor mu? (Ayarlar → Kategoriler'den değiştirilebilir)
+- [ ] Sesli kayıtta KDV ayrışıyor mu? ("Elektrik faturası 1.200 TL ödedim")
+- [ ] Gider eklerken "Bu işlemi tekrarla" → Ayarlar → Tekrarlayan işlemler
+- [ ] Ayarlar → Excel/CSV içe aktar (banka ekstresi CSV'si veya Excel)
+- [ ] Ana sayfadaki yedek hatırlatması ve duyuru kartı
+
+## Vergi takvimi ve duyurular
+Bayram uzatması, ek tarih veya duyuru için `vergi-takvimi.json` dosyasını GitHub'da düzenleyin. Ayrıntılar: VERGI-TAKVIMI.md
+
 ## Bu test sürümünde olmayanlar (Android sürümüne kalanlar)
 - Fiş üzerindeki yazıların otomatik okunması (ML Kit). Şimdilik QR kodu okunuyor, fiş fotoğrafı kayda ekleniyor.
 - Uygulama kapalıyken zamanında gelen bildirimler. Şimdilik bildirimler uygulama açıldığında kontrol ediliyor.
-- Taksitli kart harcamaları, ekstre içe aktarma, biyometrik kilit, İngilizce dil, isteğe bağlı AI sohbet.
+- Taksitli kart harcamaları, döviz ve gram altın, teklif hazırlama, İngilizce dil, isteğe bağlı AI sohbet.
 
 FOZ Analytics · Created by Fatih Özdemiroğlu · info@ozdemirogludanismanlik.com

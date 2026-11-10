@@ -1,9 +1,11 @@
-/* FOZ Defter service worker: çevrimdışı önbellek + bildirim tıklamaları */
-const CACHE = 'foz-defter-v0.1.0';
-const FILES = ['./', './index.html', './jsqr.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
+/* FOZ Defter service worker: çevrimdışı önbellek + bildirim tıklamaları
+   Sayfa (HTML) ve takvim (JSON) önce internetten alınır; böylece yeni sürüm ve
+   vergi takvimi güncellemeleri hemen gelir. İnternet yoksa önbellekten açılır. */
+const CACHE = 'foz-defter-v0.2.0';
+const FILES = ['./', './index.html', './jsqr.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './vergi-takvimi.json'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => null)))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -13,16 +15,25 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+function networkFirst(req) {
+  return fetch(req).then((res) => {
+    if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+    return res;
+  }).catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match('./index.html')));
+}
+
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET') return;
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+  const p = url.pathname;
+  if (req.mode === 'navigate' || p.endsWith('/') || p.endsWith('.html') || p.endsWith('.json')) { e.respondWith(networkFirst(req)); return; }
   e.respondWith(
-    caches.match(e.request, { ignoreSearch: true }).then((hit) => hit || fetch(e.request).then((res) => {
-      if (res && res.ok && new URL(e.request.url).origin === self.location.origin) {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy));
-      }
+    caches.match(req, { ignoreSearch: true }).then((hit) => hit || fetch(req).then((res) => {
+      if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
-    }).catch(() => caches.match('./index.html')))
+    }))
   );
 });
 

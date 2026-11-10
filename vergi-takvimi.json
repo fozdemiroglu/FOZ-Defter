@@ -1,0 +1,15 @@
+{
+  "surum": "2026-11-10",
+  "aciklama": "FOZ Defter vergi takvimi güncellemeleri. Nasıl düzenleneceği VERGI-TAKVIMI.md dosyasında.",
+  "tarih_degisiklikleri": [],
+  "ek_tarihler": [],
+  "duyurular": [
+    {
+      "id": "v02-yenilikler",
+      "baslik": "FOZ Defter v0.2 yayında",
+      "mesaj": "Yeni: Vergi / SGK ödemeleri, tekrarlayan işlemler, Excel/CSV içe aktarma, belge türü ve yedek hatırlatması.",
+      "baslangic": "2026-11-10",
+      "bitis": "2026-11-24"
+    }
+  ]
+}
