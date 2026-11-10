@@ -1720,7 +1720,7 @@ async function importData() {
     try {
       let rows;
       if (/\.xlsx$/i.test(file.name)) rows = await readXlsx(await file.arrayBuffer());
-      else { const buf = await file.arrayBuffer(); let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('�')) txt = new TextDecoder('windows-1254').decode(buf); rows = parseCSV(txt); }
+      else { const buf = await file.arrayBuffer(); let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('\uFFFD')) txt = new TextDecoder('windows-1254').decode(buf); rows = parseCSV(txt); }
       if (!rows || rows.length < 1) { toast('Dosyada satır bulunamadı'); return; }
       importMapper(file.name, rows);
     } catch (e) { toast('Dosya okunamadı: ' + e.message); }
