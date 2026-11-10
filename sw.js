@@ -1,8 +1,8 @@
 /* FOZ Defter service worker: çevrimdışı önbellek + bildirim tıklamaları
    Sayfa (HTML) ve takvim (JSON) önce internetten alınır; böylece yeni sürüm ve
    vergi takvimi güncellemeleri hemen gelir. İnternet yoksa önbellekten açılır. */
-const CACHE = 'foz-defter-v0.2.0';
-const FILES = ['./', './index.html', './jsqr.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './vergi-takvimi.json'];
+const CACHE = 'foz-defter-v0.2.1';
+const FILES = ['./', './index.html', './jsqr.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './vergi-takvimi.json', './gizlilik.html', './icon-maskable-192.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.all(FILES.map((f) => c.add(f).catch(() => null)))).then(() => self.skipWaiting()));

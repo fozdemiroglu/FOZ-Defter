@@ -15,6 +15,7 @@
 :root{--bg:#0b0f19;--card:#141a28;--card2:#1b2335;--line:#26304a;--text:#e8ecf4;--muted:#8d98b0;--acc:#5fd3a0;--acc-ink:#062b1b;--blue:#5aa8f0;--red:#f06a6a;--yellow:#f2c14e;--r:14px;--shadow:0 8px 30px rgba(0,0,0,.35)}
 [data-theme=light]{--bg:#f3f5f9;--card:#ffffff;--card2:#eef1f6;--line:#dde3ec;--text:#141a28;--muted:#5d6880;--acc:#1f9d68;--acc-ink:#ffffff;--blue:#2a7bd3;--red:#d64545;--yellow:#a87900;--shadow:0 8px 30px rgba(20,30,60,.12)}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:15px;-webkit-tap-highlight-color:transparent}
 body{max-width:560px;margin:0 auto;min-height:100vh}
 button,input,select,textarea{font:inherit;color:inherit}
@@ -1429,9 +1430,9 @@ function viewSettings() {
     <div class="btns"><button class="btn" data-act="loadSample">Örnek veri yükle</button><button class="btn danger" data-act="resetAll">Tüm verileri sil</button></div></div>
   <div class="card"><h2>Görünüm ve kurulum</h2>
     <div class="btns" style="margin-bottom:8px"><button class="btn" data-act="toggleTheme">Açık / koyu tema</button>${deferredInstall ? '<button class="btn primary" data-act="install">📲 Uygulamayı yükle</button>' : ''}</div>
-    <div class="small muted">Telefonda: Chrome menüsü → "Ana ekrana ekle". iPhone'da: Safari → Paylaş → "Ana Ekrana Ekle".</div></div>
+    ${matchMedia('(display-mode: standalone)').matches ? '' : '<div class="small muted">Telefonda: Chrome menüsü → "Ana ekrana ekle". iPhone\'da: Safari → Paylaş → "Ana Ekrana Ekle".</div>'}</div>
   <div class="card" style="text-align:center"><img src="icon.svg" width="72" height="72" style="border-radius:16px" alt=""><h2 style="justify-content:center;margin-top:8px">FOZ Defter - Ön Muhasebe</h2>
-    <div class="small muted">Sürüm ${VERSION} (test)<br>Created by <b>Fatih Özdemiroğlu</b><br><span class="ok">FOZ Analytics</span> · Smart apps for smarter finances<br>Uygulamalarım ve çözümlerim: <a href="mailto:info@ozdemirogludanismanlik.com">info@ozdemirogludanismanlik.com</a></div>
+    <div class="small muted">Sürüm ${VERSION} (test)<br>Created by <b>Fatih Özdemiroğlu</b><br><span class="ok">FOZ Analytics</span> · Smart apps for smarter finances<br>Uygulamalarım ve çözümlerim: <a href="mailto:info@ozdemirogludanismanlik.com">info@ozdemirogludanismanlik.com</a><br><a href="gizlilik.html" target="_blank" rel="noopener">Gizlilik politikası</a></div>
     <div class="note" style="text-align:left">FOZ Defter kayıt ve takip uygulamasıdır; e-Fatura veya e-SMM düzenlemez, yasal defter yerine geçmez. Vergi hesaplamaları bilgi amaçlıdır; kesin işlemler için mali müşavirinize danışın.</div></div>`;
 }
 function accForm(id) {
